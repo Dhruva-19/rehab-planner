@@ -69,6 +69,12 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Rehab Planner Ingest API", lifespan=lifespan)
+from fastapi.responses import FileResponse
+
+@app.get("/")
+def serve_test_page():
+    html_path = PROJECT_ROOT / "sensor_test" / "sensor_capture_test.html"
+    return FileResponse(html_path)
 
 app.add_middleware(
     CORSMiddleware,

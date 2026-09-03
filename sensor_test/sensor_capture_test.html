@@ -37,7 +37,7 @@
     // port 8001 instead of 8000 (this page is served by http.server on
     // 8000; FastAPI runs separately on 8001). Using location.hostname
     // means you never have to hardcode the PC's IP here.
-    const BACKEND_URL = `http://${location.hostname}:8001/ingest`;
+    const BACKEND_URL = `/ingest`;
 
     let recording = false;
     let accelBuffer = [];

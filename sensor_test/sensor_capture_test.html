@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Sensor Capture Test</title>
+  <style>
+    body { font-family: monospace; background: #111; color: #0f0; padding: 16px; }
+    button { font-size: 20px; padding: 12px 24px; margin: 8px 0; width: 100%; }
+    input[type=text] { font-size: 18px; padding: 10px; width: 100%; box-sizing: border-box;
+                        background: #222; color: #0f0; border: 1px solid #444; margin: 8px 0; }
+    #status { color: #ff0; margin: 8px 0; }
+    #uploadStatus { color: #0ff; margin: 8px 0; }
+    .row { margin: 4px 0; font-size: 15px; }
+    .label { color: #888; }
+  </style>
+</head>
+<body>
+  <h2>Sensor Capture Test</h2>
+
+  <input type="text" id="sessionLabel" placeholder="Session label (optional - e.g. squats_test1)">
+
+  <button id="startBtn">Start Recording</button>
+  <button id="stopBtn" disabled>Stop Recording</button>
+  <div id="status">Idle</div>
+  <div id="uploadStatus"></div>
+
+  <div class="row"><span class="label">Accel (m/s²) x,y,z:</span> <span id="accelVals">-</span></div>
+  <div class="row"><span class="label">Gyro (rad/s) x,y,z:</span> <span id="gyroVals">-</span></div>
+  <div class="row"><span class="label">Accel sample rate:</span> <span id="accelHz">-</span> Hz</div>
+  <div class="row"><span class="label">Gyro sample rate:</span> <span id="gyroHz">-</span> Hz</div>
+  <div class="row"><span class="label">Accel samples captured:</span> <span id="accelCount">0</span></div>
+  <div class="row"><span class="label">Gyro samples captured:</span> <span id="gyroCount">0</span></div>
+
+  <script>
+    // Backend is assumed to run on the same host as this page, just on
+    // port 8001 instead of 8000 (this page is served by http.server on
+    // 8000; FastAPI runs separately on 8001). Using location.hostname
+    // means you never have to hardcode the PC's IP here.
+    const BACKEND_URL = `http://${location.hostname}:8001/ingest`;
+
+    let recording = false;
+    let accelBuffer = [];
+    let gyroBuffer = [];
+    let accelHzCounter = { count: 0, windowStart: 0 };
+    let gyroHzCounter = { count: 0, windowStart: 0 };
+
+    const statusEl = document.getElementById('status');
+    const uploadStatusEl = document.getElementById('uploadStatus');
+    const startBtn = document.getElementById('startBtn');
+    const stopBtn = document.getElementById('stopBtn');
+    const labelInput = document.getElementById('sessionLabel');
+
+    function updateHz(counter, displayEl, ts) {
+      if (counter.windowStart === 0) counter.windowStart = ts;
+      counter.count++;
+      const elapsed = ts - counter.windowStart;
+      if (elapsed >= 1000) {
+        displayEl.textContent = (counter.count / (elapsed / 1000)).toFixed(1);
+        counter.count = 0;
+        counter.windowStart = ts;
+      }
+    }
+
+    function onMotion(event) {
+      if (!recording) return;
+      const ts = performance.now();
+
+      const acc = event.accelerationIncludingGravity;
+      if (acc && acc.x !== null) {
+        accelBuffer.push({ t: ts, x: acc.x, y: acc.y, z: acc.z });
+        document.getElementById('accelVals').textContent =
+          `${acc.x.toFixed(2)}, ${acc.y.toFixed(2)}, ${acc.z.toFixed(2)}`;
+        document.getElementById('accelCount').textContent = accelBuffer.length;
+        updateHz(accelHzCounter, document.getElementById('accelHz'), ts);
+      }
+
+      const rot = event.rotationRate;
+      if (rot && rot.alpha !== null) {
+        const toRad = Math.PI / 180;
+        gyroBuffer.push({ t: ts, x: rot.beta * toRad, y: rot.gamma * toRad, z: rot.alpha * toRad });
+        document.getElementById('gyroVals').textContent =
+          `${(rot.beta*toRad).toFixed(2)}, ${(rot.gamma*toRad).toFixed(2)}, ${(rot.alpha*toRad).toFixed(2)}`;
+        document.getElementById('gyroCount').textContent = gyroBuffer.length;
+        updateHz(gyroHzCounter, document.getElementById('gyroHz'), ts);
+      }
+    }
+
+    startBtn.onclick = async () => {
+      accelBuffer = [];
+      gyroBuffer = [];
+      accelHzCounter = { count: 0, windowStart: 0 };
+      gyroHzCounter = { count: 0, windowStart: 0 };
+      uploadStatusEl.textContent = '';
+
+      window.addEventListener('devicemotion', onMotion);
+      recording = true;
+      statusEl.textContent = 'Recording...';
+      startBtn.disabled = true;
+      stopBtn.disabled = false;
+      labelInput.disabled = true;
+    };
+
+    stopBtn.onclick = async () => {
+      recording = false;
+      window.removeEventListener('devicemotion', onMotion);
+      statusEl.textContent = `Stopped. Captured ${accelBuffer.length} accel samples, ${gyroBuffer.length} gyro samples.`;
+      startBtn.disabled = false;
+      stopBtn.disabled = true;
+      labelInput.disabled = false;
+
+      // Send to backend
+      uploadStatusEl.textContent = 'Uploading...';
+      try {
+        const response = await fetch(BACKEND_URL, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            session_name: labelInput.value.trim() || null,
+            accel: accelBuffer,
+            gyro: gyroBuffer
+          })
+        });
+        const result = await response.json();
+        if (result.status === 'ok') {
+          uploadStatusEl.textContent =
+            `Uploaded as "${result.session_id}" (${result.accel_samples} accel, ${result.gyro_samples} gyro samples)`;
+        } else {
+          uploadStatusEl.textContent = `Upload error: ${result.message}`;
+        }
+      } catch (err) {
+        uploadStatusEl.textContent = `Upload failed: ${err.message} (is the backend running on port 8001?)`;
+      }
+    };
+
+    if (typeof DeviceMotionEvent === 'undefined') {
+      statusEl.textContent = 'ERROR: DeviceMotionEvent not supported on this browser.';
+      startBtn.disabled = true;
+    }
+  </script>
+</body>
+</html>

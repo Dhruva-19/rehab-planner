@@ -1,0 +1,33 @@
+# Virtual environments
+venv/
+fastapi-env/
+.venv/
+
+# Python
+__pycache__/
+*.pyc
+
+# Database (local data, not committed)
+database/*.db
+*.db
+
+# Dataset & derived artifacts (not needed to run the app)
+data/raw/
+data/processed/
+data/live_recordings/
+data/sample_upload/
+backend/data/sample_upload/
+
+# Reference / dev-only material
+reference/
+notebooks/
+scripts/*.csv
+scripts/*.png
+x.py
+
+# Env secrets
+.env
+
+# OS/editor junk
+.DS_Store
+.vscode/

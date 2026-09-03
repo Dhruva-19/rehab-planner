@@ -24,6 +24,7 @@
   <button id="stopBtn" disabled>Stop Recording</button>
   <div id="status">Idle</div>
   <div id="uploadStatus"></div>
+  <div id="results"></div>
 
   <div class="row"><span class="label">Accel (m/s²) x,y,z:</span> <span id="accelVals">-</span></div>
   <div class="row"><span class="label">Gyro (rad/s) x,y,z:</span> <span id="gyroVals">-</span></div>
@@ -123,9 +124,27 @@
         });
         const result = await response.json();
         if (result.status === 'ok') {
-          uploadStatusEl.textContent =
-            `Uploaded as "${result.session_id}" (${result.accel_samples} accel, ${result.gyro_samples} gyro samples)`;
-        } else {
+  uploadStatusEl.textContent =
+    `Uploaded as "${result.session_id}" (${result.accel_samples} accel, ${result.gyro_samples} gyro samples)`;
+
+  const resultsEl = document.getElementById('results');
+  if (result.sets && result.sets.length > 0) {
+    let html = '<h3 style="color:#0f0;">Detected Exercises</h3>';
+    result.sets.forEach(set => {
+      html += `
+        <div style="border:1px solid #444; padding:10px; margin:8px 0; border-radius:6px;">
+          <div style="color:#0ff; font-size:18px;">${set.label}</div>
+          <div class="row"><span class="label">Reps:</span> ${set.estimated_reps ?? '-'}</div>
+          <div class="row"><span class="label">Duration:</span> ${set.duration_s?.toFixed(1) ?? '-'}s</div>
+          <div class="row"><span class="label">Quality score:</span> ${set.quality_score?.toFixed(0) ?? '-'}</div>
+          <div class="row"><span class="label">Feedback:</span> ${set.feedback ?? '-'}</div>
+        </div>`;
+    });
+    resultsEl.innerHTML = html;
+  } else {
+    resultsEl.innerHTML = '<div style="color:#f80;">No exercise sets detected.</div>';
+  }
+} else {
           uploadStatusEl.textContent = `Upload error: ${result.message}`;
         }
       } catch (err) {

@@ -1,24 +1,7 @@
-# Core
-numpy>=1.24
-pandas>=2.0
-scipy>=1.10
-
-# ML
-scikit-learn>=1.3
-xgboost>=2.0
-tensorflow>=2.15   # optional, only needed for the LSTM stage
-
-# Feature engineering / signal processing
-tsfresh>=0.20       # optional: automated time-series feature extraction
-
-# Dashboard & storage
 streamlit>=1.30
-sqlalchemy>=2.0
+requests>=2.31
+pandas>=2.0
+numpy>=1.24
 plotly>=5.18
-
-# Utilities
 matplotlib>=3.8
 seaborn>=0.13
-joblib>=1.3
-tqdm>=4.66
-jupyterlab>=4.0

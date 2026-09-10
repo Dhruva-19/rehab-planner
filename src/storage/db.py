@@ -65,8 +65,11 @@ CREATE INDEX IF NOT EXISTS idx_sets_session ON sets (session_id);
 import hashlib
 
 def migrate_add_users_table_and_user_id():
+    init_db()   # <-- add this line first — ensures sessions/sets exist before we alter them
+
     conn = get_connection()
     cur = conn.cursor()
+
     cur.execute("""
         CREATE TABLE IF NOT EXISTS users (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -74,10 +77,18 @@ def migrate_add_users_table_and_user_id():
             password_hash TEXT NOT NULL
         )
     """)
-    cur.execute("PRAGMA table_info(sessions)")
-    existing_cols = [row[1] for row in cur.fetchall()]
-    if "user_id" not in existing_cols:
-        cur.execute("ALTER TABLE sessions ADD COLUMN user_id INTEGER")
+
+    # Only try to alter `sessions` if it already exists — on a fresh
+    # (ephemeral) Render filesystem, sessions/sets may not be created yet.
+    cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='sessions'")
+    sessions_exists = cur.fetchone() is not None
+
+    if sessions_exists:
+        cur.execute("PRAGMA table_info(sessions)")
+        existing_cols = [row[1] for row in cur.fetchall()]
+        if "user_id" not in existing_cols:
+            cur.execute("ALTER TABLE sessions ADD COLUMN user_id INTEGER")
+
     conn.commit()
     conn.close()
 

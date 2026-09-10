@@ -76,6 +76,8 @@ def serve_test_page():
     html_path = PROJECT_ROOT / "sensor_test" / "sensor_capture_test.html"
     return FileResponse(html_path)
 
+
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -83,6 +85,218 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+from fastapi import FastAPI, Form, Cookie, Response
+from fastapi.responses import HTMLResponse, RedirectResponse
+import uuid
+import sqlite3
+from datetime import datetime, timedelta
+from src.storage.db import create_user, verify_user, get_connection, migrate_add_users_table_and_user_id
+
+migrate_add_users_table_and_user_id()  # safe to call repeatedly, uses IF NOT EXISTS
+
+# In-memory session store: {session_token: user_id}. Fine for a single-instance
+# Render demo — resets on restart, same tradeoff as the ephemeral filesystem.
+SESSIONS = {}
+
+def get_current_user(session_token: str = Cookie(default=None)):
+    if session_token and session_token in SESSIONS:
+        return SESSIONS[session_token]
+    return None
+
+# ---------- Extra tables: goals ----------
+def ensure_goals_table():
+    conn = get_connection()
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS goals (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            goal_text TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        )
+    """)
+    conn.commit()
+    conn.close()
+
+ensure_goals_table()
+
+# ---------- Auth pages ----------
+@app.get("/login", response_class=HTMLResponse)
+def login_page():
+    return """
+    <h2>Rehab Planner Login</h2>
+    <form method="post" action="/login">
+      <input name="username" placeholder="Username"><br>
+      <input name="password" type="password" placeholder="Password"><br>
+      <button type="submit">Log In</button>
+    </form>
+    <p><a href="/signup">Sign up instead</a></p>
+    """
+
+@app.post("/login")
+def login_submit(username: str = Form(...), password: str = Form(...)):
+    user_id = verify_user(username, password)
+    if not user_id:
+        return HTMLResponse("<p>Invalid login. <a href='/login'>Try again</a></p>")
+    token = str(uuid.uuid4())
+    SESSIONS[token] = user_id
+    resp = RedirectResponse(url="/dashboard", status_code=302)
+    resp.set_cookie(key="session_token", value=token)
+    return resp
+
+@app.get("/signup", response_class=HTMLResponse)
+def signup_page():
+    return """
+    <h2>Sign Up</h2>
+    <form method="post" action="/signup">
+      <input name="username" placeholder="Username"><br>
+      <input name="password" type="password" placeholder="Password"><br>
+      <button type="submit">Sign Up</button>
+    </form>
+    """
+
+@app.post("/signup")
+def signup_submit(username: str = Form(...), password: str = Form(...)):
+    if create_user(username, password):
+        return RedirectResponse(url="/login", status_code=302)
+    return HTMLResponse("<p>Username taken. <a href='/signup'>Try again</a></p>")
+
+@app.get("/logout")
+def logout(session_token: str = Cookie(default=None)):
+    SESSIONS.pop(session_token, None)
+    resp = RedirectResponse(url="/login", status_code=302)
+    resp.delete_cookie("session_token")
+    return resp
+
+# ---------- Dashboard ----------
+@app.get("/dashboard", response_class=HTMLResponse)
+def dashboard(session_token: str = Cookie(default=None)):
+    user_id = get_current_user(session_token)
+    if not user_id:
+        return RedirectResponse(url="/login", status_code=302)
+
+    conn = get_connection()
+    # --- /dashboard ---
+    rows = conn.execute(
+        "SELECT sessions.uploaded_at, sets.label, sets.quality_score "
+        "FROM sets JOIN sessions ON sets.session_id = sessions.session_id "
+        "WHERE sessions.user_id = ? OR sessions.user_id IS NULL "
+        "ORDER BY sessions.uploaded_at DESC LIMIT 20",
+        (user_id,)
+    ).fetchall()
+    conn.close()
+
+    rows_html = "".join(
+        f"<tr><td>{r[1]}</td><td>{r[2]}</td><td>{r[3] if r[3] is not None else '-'}</td></tr>"
+        for r in rows
+    )
+    return f"""
+    <h2>Dashboard</h2>
+    <p><a href="/progress">Progress Trend</a> | <a href="/streak">Streak</a> | 
+       <a href="/goals">Goals</a> | <a href="/logout">Log out</a></p>
+    <table border="1" cellpadding="6">
+      <tr><th>Date</th><th>Exercise</th><th>Quality Score</th></tr>
+      {rows_html}
+    </table>
+    """
+
+# ---------- Progress trend ----------
+@app.get("/progress", response_class=HTMLResponse)
+def progress(session_token: str = Cookie(default=None)):
+    user_id = get_current_user(session_token)
+    if not user_id:
+        return RedirectResponse(url="/login", status_code=302)
+
+    conn = get_connection()
+    # --- /progress ---
+    rows = conn.execute(
+        "SELECT substr(sessions.uploaded_at, 1, 10) AS day, AVG(sets.quality_score) "
+        "FROM sets JOIN sessions ON sets.session_id = sessions.session_id "
+        "WHERE (sessions.user_id = ? OR sessions.user_id IS NULL) AND sets.quality_score IS NOT NULL "
+        "GROUP BY day ORDER BY day",
+        (user_id,)
+    ).fetchall()
+    conn.close()
+
+    rows_html = "".join(f"<tr><td>{r[0]}</td><td>{r[1]:.1f}</td></tr>" for r in rows)
+    return f"""
+    <h2>Progress Trend (avg quality score per session)</h2>
+    <p><a href="/dashboard">Back</a></p>
+    <table border="1" cellpadding="6">
+      <tr><th>Date</th><th>Avg Quality</th></tr>
+      {rows_html}
+    </table>
+    """
+
+# ---------- Streak tracker ----------
+@app.get("/streak", response_class=HTMLResponse)
+def streak(session_token: str = Cookie(default=None)):
+    user_id = get_current_user(session_token)
+    if not user_id:
+        return RedirectResponse(url="/login", status_code=302)
+
+    conn = get_connection()
+   # --- /streak ---
+    rows = conn.execute(
+        "SELECT DISTINCT substr(uploaded_at, 1, 10) AS day FROM sessions "
+        "WHERE user_id = ? OR user_id IS NULL ORDER BY day DESC",
+        (user_id,)
+    ).fetchall()
+    conn.close()
+
+    dates = [datetime.strptime(r[0], "%Y-%m-%d").date() for r in rows if r[0]]
+    streak_count = 0
+    if dates:
+        expected = dates[0]
+        for d in dates:
+            if d == expected:
+                streak_count += 1
+                expected = expected - timedelta(days=1)
+            else:
+                break
+
+    return f"""
+    <h2>Current Streak: {streak_count} day(s)</h2>
+    <p><a href="/dashboard">Back</a></p>
+    """
+
+# ---------- Goal setting ----------
+@app.get("/goals", response_class=HTMLResponse)
+def goals_page(session_token: str = Cookie(default=None)):
+    user_id = get_current_user(session_token)
+    if not user_id:
+        return RedirectResponse(url="/login", status_code=302)
+
+    conn = get_connection()
+    rows = conn.execute(
+        "SELECT goal_text, created_at FROM goals WHERE user_id = ? ORDER BY created_at DESC",
+        (user_id,)
+    ).fetchall()
+    conn.close()
+
+    goals_html = "".join(f"<li>{r[0]} <small>({r[1]})</small></li>" for r in rows)
+    return f"""
+    <h2>Your Goals</h2>
+    <p><a href="/dashboard">Back</a></p>
+    <form method="post" action="/goals">
+      <input name="goal_text" placeholder="e.g. 3 sessions this week"><br>
+      <button type="submit">Add Goal</button>
+    </form>
+    <ul>{goals_html}</ul>
+    """
+
+@app.post("/goals")
+def add_goal(goal_text: str = Form(...), session_token: str = Cookie(default=None)):
+    user_id = get_current_user(session_token)
+    if not user_id:
+        return RedirectResponse(url="/login", status_code=302)
+    conn = get_connection()
+    conn.execute(
+        "INSERT INTO goals (user_id, goal_text, created_at) VALUES (?, ?, ?)",
+        (user_id, goal_text, datetime.now().strftime("%Y-%m-%d %H:%M"))
+    )
+    conn.commit()
+    conn.close()
+    return RedirectResponse(url="/goals", status_code=302)
 
 class SensorSample(BaseModel):
     t: float

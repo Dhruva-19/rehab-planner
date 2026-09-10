@@ -117,6 +117,27 @@ def read_raw_sensor_csv(csv_path: str):
     xyz = arr[:, 2:5]
     return timestamps, xyz
 
+def remap_live_axes(xyz: np.ndarray) -> np.ndarray:
+    """
+    Swaps Y and Z axes to correct for live phone mounting orientation
+    mismatch vs MM-Fit's sp_r training convention (Day 20 root cause).
+
+    Live capture is Y-axis dominant for motions that are Z-axis dominant
+    in training (and vice versa) because the phone is mounted with a
+    different orientation than MM-Fit's data collection rig.
+
+    Hardcoded, documented assumption — not adaptive. Applies to both
+    accel and gyro arrays (same physical coordinate frame).
+
+    Args:
+        xyz: (T, 3) array, columns = [x, y, z] as read from raw CSV.
+    Returns:
+        (T, 3) array with y and z columns swapped.
+    """
+    remapped = xyz.copy()
+    remapped[:, 1] = xyz[:, 2]   # training Y slot <- live Z
+    remapped[:, 2] = xyz[:, 1]   # training Z slot <- live Y
+    return remapped
 
 # -----------------------------
 # Resample + chunk (mirrors resample_pipeline.process_session)
@@ -127,8 +148,10 @@ def process_uploaded_session(acc_csv_path: str, gyro_csv_path: str) -> list:
     two uploaded CSVs instead of a fixed data/raw/mm-fit/{session}/ path.
     """
     acc_ts, acc_xyz = read_raw_sensor_csv(acc_csv_path)
-    gyr_ts, gyr_xyz = read_raw_sensor_csv(gyro_csv_path)
+    acc_xyz = remap_live_axes(acc_xyz)          # <-- remap accel
 
+    gyr_ts, gyr_xyz = read_raw_sensor_csv(gyro_csv_path)
+    gyr_xyz = remap_live_axes(gyr_xyz)          # <-- remap gyro
     acc_segments = split_at_gaps(acc_ts, acc_xyz, GAP_THRESHOLD_S)
 
     chunks = []

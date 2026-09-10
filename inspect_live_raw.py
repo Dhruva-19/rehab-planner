@@ -108,7 +108,104 @@ def main():
         "every gyro-derived feature and the rep counter (which runs on raw "
         "gyro magnitude)"
     )
+    run_model_predictions(session_name)
 
+def run_model_predictions(session_name: str):
+    """
+    Step 2: run the SAME predict_from_raw_csv() pipeline used by
+    /ingest, but surface top-3 class probabilities per window instead
+    of just the final predicted label. This is the key Phase B check:
 
+      - if the real 5/8/9 cluster (tricep_extensions,
+        dumbbell_shoulder_press, lateral_shoulder_raises) shows up in
+        top-3 with bicep_curls only narrowly ahead -> likely
+        drift/orientation.
+      - if bicep_curls wins outright and 5/8/9 barely appear ->
+        likely a pipeline/feature bug, not a model weakness.
+    """
+    sys.path.append(str(PROJECT_ROOT / "src" / "inference"))
+    sys.path.append(str(PROJECT_ROOT / "src" / "preprocessing"))
+    sys.path.append(str(PROJECT_ROOT / "src" / "feature_engineering"))
+
+    from predict_pipeline import (
+        load_model_bundle, process_uploaded_session,
+        extract_window_features, MODEL_PATH, WINDOWS_NPZ_PATH,
+    )
+    from sliding_windows import slide_windows_over_chunk
+
+    acc_csv = SAMPLE_UPLOAD_DIR / f"{session_name}_acc.csv"
+    gyro_csv = SAMPLE_UPLOAD_DIR / f"{session_name}_gyro.csv"
+
+    bundle = load_model_bundle(MODEL_PATH, WINDOWS_NPZ_PATH)
+    model = bundle["model"]
+    feature_cols = bundle["feature_cols"]
+    label_encoder = bundle["label_encoder"]
+    label_names = bundle["label_names"]
+
+    chunks = process_uploaded_session(str(acc_csv), str(gyro_csv))
+    all_windows = []
+    for chunk in chunks:
+        all_windows.extend(slide_windows_over_chunk(chunk))
+
+    if not all_windows:
+        print("\n[!] No windows produced -- capture may be too short.")
+        return
+
+    feature_rows, meta_rows = [], []
+    for w in all_windows:
+        feature_rows.append(extract_window_features(w["data"]))
+        meta_rows.append({"start_time": w["start_time"]})
+
+    features_df = pd.DataFrame(feature_rows).replace(
+        [np.inf, -np.inf], np.nan).fillna(0.0)
+
+    missing_cols = [c for c in feature_cols if c not in features_df.columns]
+    if missing_cols:
+        print(f"\n[BUG FOUND] Feature extraction is missing columns the "
+              f"model expects: {missing_cols}")
+        return
+
+    features_df = features_df[feature_cols]
+
+    pred_proba = model.predict_proba(features_df)
+    encoded_classes = model.classes_
+
+    print(f"\n--- Top-3 class probabilities per window "
+          f"({len(all_windows)} windows) ---\n")
+
+    cluster_names = {"tricep_extensions", "dumbbell_shoulder_press",
+                      "lateral_shoulder_raises"}
+    cluster_in_top3 = 0
+    bicep_curls_top1 = 0
+
+    for i in range(len(all_windows)):
+        proba_row = pred_proba[i]
+        top3_idx = np.argsort(proba_row)[::-1][:3]
+        top3_int = label_encoder.inverse_transform(encoded_classes[top3_idx])
+        top3_names = [label_names[lbl] for lbl in top3_int]
+        top3_probs = proba_row[top3_idx]
+
+        top3_str = ", ".join(f"{n}={p:.2f}" for n, p in zip(top3_names, top3_probs))
+        print(f"  t={meta_rows[i]['start_time']:6.2f}s  ->  {top3_str}")
+
+        if cluster_names & set(top3_names):
+            cluster_in_top3 += 1
+        if top3_names[0] == "bicep_curls":
+            bicep_curls_top1 += 1
+
+    print("\n--- Interpretation ---")
+    print(f"  5/8/9 cluster present in top-3: {cluster_in_top3}/{len(all_windows)}")
+    print(f"  bicep_curls is #1 prediction:   {bicep_curls_top1}/{len(all_windows)}")
+
+    if cluster_in_top3 >= len(all_windows) * 0.5:
+        print("\n  => 5/8/9 cluster IS showing up in top-3 for most windows. "
+              "Points toward drift/orientation -- model is 'in the right "
+              "neighborhood', bicep_curls just narrowly edges it out.")
+    else:
+        print("\n  => 5/8/9 cluster is largely ABSENT from top-3, bicep_curls "
+              "wins outright. Points toward a pipeline/feature bug -- "
+              "feature_cols reindexing, resampling, or windowing specific "
+              "to the /ingest path -- not a model weakness.")
+        
 if __name__ == "__main__":
     main()

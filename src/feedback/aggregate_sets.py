@@ -22,7 +22,29 @@ doing the work (see Day12_Summary.md for full breakdown).
 Rep counting is OPT-IN: pass raw_gyro_ts + raw_gyro_xyz to get an
 `estimated_reps` column; omit them and existing callers work unchanged
 (estimated_reps will be NaN).
-"""
+
+
+Day 12 update: added optional rep-counting per set, using gyroscope-
+magnitude peak detection. distance=1.5s was locked after validating
+against MM-Fit ground-truth reps on held-out test sessions (w00, w01,
+w08, w15, w17) - gyro MAE 2.28 across 158 labeled segments, 10 exercise
+types.
+
+Day 19 update: replaced the flat 1.5s distance with per-exercise
+overrides (REP_COUNT_DISTANCE_OVERRIDES) for the 4 exercises where a
+leave-one-session-out (LOSO) validation confirmed the gain generalizes:
+pushups (1.0s), jumping_jacks (0.8s), lunges (1.8s), lateral_shoulder_
+raises (1.8s). The other 6 exercises keep 1.5s - their in-sample-optimal
+distances did NOT survive LOSO validation (flat or worse out-of-fold
+MAE on ~15-16 segments each), so tuning them would have been fitting
+noise, not signal. Pooled gyro MAE: 2.28 -> 1.46 across all 158
+segments. See scripts/sweep_rep_counting.py, scripts/loso_validate_
+rep_distance.py, and Day19_Summary.md for full methodology.
+
+Prior Day-12 note on jumping_jacks/pushups being "unreliable due to
+hip-pocket sensor placement" is superseded for these two exercises -
+the real cause was distance mis-tuning, not an unfixable placement
+limitation (see Day19_Summary.md)."""
 
 from collections import Counter
 import numpy as np

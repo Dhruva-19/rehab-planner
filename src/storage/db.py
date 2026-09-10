@@ -62,6 +62,57 @@ CREATE TABLE IF NOT EXISTS sets (
 CREATE INDEX IF NOT EXISTS idx_sets_session ON sets (session_id);
 """
 
+import hashlib
+
+def migrate_add_users_table_and_user_id():
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT UNIQUE NOT NULL,
+            password_hash TEXT NOT NULL
+        )
+    """)
+    cur.execute("PRAGMA table_info(sessions)")
+    existing_cols = [row[1] for row in cur.fetchall()]
+    if "user_id" not in existing_cols:
+        cur.execute("ALTER TABLE sessions ADD COLUMN user_id INTEGER")
+    conn.commit()
+    conn.close()
+
+
+def hash_password(password: str) -> str:
+    return hashlib.sha256(password.encode()).hexdigest()
+
+
+def create_user(username: str, password: str) -> bool:
+    conn = get_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            "INSERT INTO users (username, password_hash) VALUES (?, ?)",
+            (username, hash_password(password))
+        )
+        conn.commit()
+        return True
+    except sqlite3.IntegrityError:
+        return False
+    finally:
+        conn.close()
+
+
+def verify_user(username: str, password: str):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT id FROM users WHERE username = ? AND password_hash = ?",
+        (username, hash_password(password))
+    )
+    row = cur.fetchone()
+    conn.close()
+    return row[0] if row else None
+
 
 def get_connection(db_path: str = DB_PATH) -> sqlite3.Connection:
     """Open a connection with foreign key enforcement turned on."""

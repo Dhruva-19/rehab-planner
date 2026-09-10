@@ -31,6 +31,12 @@ import pandas as pd
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+import sys
+from pathlib import Path
+
+# Ensure repo root (parent of backend/) is on sys.path so `from src...`
+# imports resolve correctly regardless of Render's working directory.
+sys.path.append(str(Path(__file__).resolve().parent.parent))
 
 # --- Make sibling src/ packages importable, same pattern as app.py -----
 # main.py lives in backend/, so project root is one level up.

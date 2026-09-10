@@ -34,6 +34,34 @@ from pydantic import BaseModel
 import sys
 from pathlib import Path
 
+
+NAV_STYLE = """
+<style>
+  body { font-family: system-ui, sans-serif; background:#111; color:#eee; padding:20px; max-width:700px; margin:auto; }
+  h2 { color:#4ade80; }
+  a { color:#60a5fa; text-decoration:none; margin-right:12px; }
+  a:hover { text-decoration:underline; }
+  table { width:100%; border-collapse:collapse; margin-top:10px; }
+  th, td { border:1px solid #333; padding:8px; text-align:left; }
+  th { background:#1f2937; }
+  input { padding:8px; margin:4px 0; width:100%; max-width:300px; background:#222; border:1px solid #444; color:#eee; border-radius:4px; }
+  button { padding:8px 16px; background:#4ade80; color:#000; border:none; border-radius:4px; cursor:pointer; margin-top:8px; }
+  button:hover { background:#22c55e; }
+  .nav { margin-bottom:20px; padding-bottom:10px; border-bottom:1px solid #333; }
+</style>
+"""
+
+NAV_BAR = """
+<div class="nav">
+  <a href="/dashboard">Dashboard</a>
+  <a href="/">Record Exercise</a>
+  <a href="/progress">Progress</a>
+  <a href="/streak">Streak</a>
+  <a href="/goals">Goals</a>
+  <a href="/logout">Log out</a>
+</div>
+"""
+
 # Ensure repo root (parent of backend/) is on sys.path so `from src...`
 # imports resolve correctly regardless of Render's working directory.
 sys.path.append(str(Path(__file__).resolve().parent.parent))
@@ -196,6 +224,8 @@ def dashboard(session_token: str = Cookie(default=None)):
         for r in rows
     )
     return f"""
+    {NAV_STYLE}
+    {NAV_BAR}
     <h2>Dashboard</h2>
     <p><a href="/progress">Progress Trend</a> | <a href="/streak">Streak</a> | 
        <a href="/goals">Goals</a> | <a href="/logout">Log out</a></p>
@@ -225,6 +255,8 @@ def progress(session_token: str = Cookie(default=None)):
 
     rows_html = "".join(f"<tr><td>{r[0]}</td><td>{r[1]:.1f}</td></tr>" for r in rows)
     return f"""
+    {NAV_STYLE}
+    {NAV_BAR}
     <h2>Progress Trend (avg quality score per session)</h2>
     <p><a href="/dashboard">Back</a></p>
     <table border="1" cellpadding="6">
@@ -261,6 +293,8 @@ def streak(session_token: str = Cookie(default=None)):
                 break
 
     return f"""
+    {NAV_STYLE}
+    {NAV_BAR}
     <h2>Current Streak: {streak_count} day(s)</h2>
     <p><a href="/dashboard">Back</a></p>
     """
@@ -281,6 +315,8 @@ def goals_page(session_token: str = Cookie(default=None)):
 
     goals_html = "".join(f"<li>{r[0]} <small>({r[1]})</small></li>" for r in rows)
     return f"""
+    {NAV_STYLE}
+    {NAV_BAR}
     <h2>Your Goals</h2>
     <p><a href="/dashboard">Back</a></p>
     <form method="post" action="/goals">

@@ -6,51 +6,243 @@
   <title>Sensor Capture Test</title>
   <style>
     body { font-family: monospace; background: #111; color: #0f0; padding: 16px; }
-    button { font-size: 20px; padding: 12px 24px; margin: 8px 0; width: 100%; }
-    input[type=text] { font-size: 18px; padding: 10px; width: 100%; box-sizing: border-box;
-                        background: #222; color: #0f0; border: 1px solid #444; margin: 8px 0; }
+    input[type=text] {
+      font-size: 18px; padding: 10px; width: 100%; box-sizing: border-box;
+      background: #222; color: #0f0; border: 1px solid #444; margin: 8px 0;
+    }
     #status { color: #ff0; margin: 8px 0; }
     #uploadStatus { color: #0ff; margin: 8px 0; }
     .row { margin: 4px 0; font-size: 15px; }
     .label { color: #888; }
+
+    /* =====================================================
+       SLIDE-TO-CONFIRM component (reused for Start and Stop)
+       ===================================================== */
+    .slideTrack {
+      position: relative;
+      width: 100%;
+      height: 60px;
+      background: #1a1a1a;
+      border: 1px solid #444;
+      border-radius: 30px;
+      margin: 12px 0;
+      overflow: hidden;
+      touch-action: none;
+      user-select: none;
+    }
+    .slideTrack.stopVariant { border-color: #f44; }
+    .slideLabel {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #888;
+      font-size: 16px;
+      pointer-events: none;
+    }
+    .slideThumb {
+      position: absolute;
+      top: 3px; left: 3px;
+      width: 54px; height: 54px;
+      border-radius: 50%;
+      background: #0f0;
+      color: #000;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 22px;
+      font-weight: bold;
+      cursor: grab;
+      touch-action: none;
+    }
+    .stopVariant .slideThumb { background: #f44; }
+
+    /* =====================================================
+       Pocket Lock Overlay — sits above BOTH views
+       ===================================================== */
+    #pocketOverlay {
+      position: fixed;
+      inset: 0;
+      background: #000;
+      color: #0f0;
+      z-index: 999999;
+      display: none;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      font-family: monospace;
+      font-size: 22px;
+      text-align: center;
+      padding: 24px;
+      touch-action: none;
+      user-select: none;
+    }
+    #pocketOverlay .elapsed { font-size: 40px; margin: 16px 0; color: #0f0; }
+    #pocketOverlay .hint { font-size: 14px; color: #888; margin-top: 20px; }
+    #pocketOverlay .slideTrack { width: 90%; }
   </style>
 </head>
 <body>
-  <h2>Sensor Capture Test</h2>
 
-  <input type="text" id="sessionLabel" placeholder="Session label (optional - e.g. squats_test1)">
+  <div>
+    <h2>Sensor Capture Test</h2>
 
-  <button id="startBtn">Start Recording</button>
-  <button id="stopBtn" disabled>Stop Recording</button>
-  <div id="status">Idle</div>
-  <div id="uploadStatus"></div>
-  <div id="results"></div>
+    <input type="text" id="sessionLabel" placeholder="Session label (optional - e.g. squats_test1)">
 
-  <div class="row"><span class="label">Accel (m/s²) x,y,z:</span> <span id="accelVals">-</span></div>
-  <div class="row"><span class="label">Gyro (rad/s) x,y,z:</span> <span id="gyroVals">-</span></div>
-  <div class="row"><span class="label">Accel sample rate:</span> <span id="accelHz">-</span> Hz</div>
-  <div class="row"><span class="label">Gyro sample rate:</span> <span id="gyroHz">-</span> Hz</div>
-  <div class="row"><span class="label">Accel samples captured:</span> <span id="accelCount">0</span></div>
-  <div class="row"><span class="label">Gyro samples captured:</span> <span id="gyroCount">0</span></div>
+    <!-- Slide-to-Start replaces the old tap button -->
+    <div class="slideTrack" id="startSlideTrack">
+      <div class="slideLabel">Slide to Start →</div>
+      <div class="slideThumb" id="startSlideThumb">▶</div>
+    </div>
+
+    <div id="status">Idle</div>
+    <div id="uploadStatus"></div>
+    <div id="results"></div>
+
+    <div class="row"><span class="label">Accel (m/s²) x,y,z:</span> <span id="accelVals">-</span></div>
+    <div class="row"><span class="label">Gyro (rad/s) x,y,z:</span> <span id="gyroVals">-</span></div>
+    <div class="row"><span class="label">Accel sample rate:</span> <span id="accelHz">-</span> Hz</div>
+    <div class="row"><span class="label">Gyro sample rate:</span> <span id="gyroHz">-</span> Hz</div>
+    <div class="row"><span class="label">Accel samples captured:</span> <span id="accelCount">0</span></div>
+    <div class="row"><span class="label">Gyro samples captured:</span> <span id="gyroCount">0</span></div>
+  </div>
+
+  <!-- Pocket Lock Overlay -->
+  <div id="pocketOverlay">
+    <div>Recording your session...</div>
+    <div class="elapsed" id="overlayElapsed">0:00</div>
+
+    <!-- Slide-to-Stop replaces the old long-press bar -->
+    <div class="slideTrack stopVariant" id="stopSlideTrack">
+      <div class="slideLabel">Slide to Stop →</div>
+      <div class="slideThumb" id="stopSlideThumb">■</div>
+    </div>
+
+    <div class="hint">Finish your workout, then slide the red control to stop.</div>
+  </div>
 
   <script>
-    // Backend is assumed to run on the same host as this page, just on
-    // port 8001 instead of 8000 (this page is served by http.server on
-    // 8000; FastAPI runs separately on 8001). Using location.hostname
-    // means you never have to hardcode the PC's IP here.
     const BACKEND_URL = `/ingest`;
 
+    // =====================================================================
+    // RECORDING STATE
+    // =====================================================================
     let recording = false;
     let accelBuffer = [];
     let gyroBuffer = [];
     let accelHzCounter = { count: 0, windowStart: 0 };
     let gyroHzCounter = { count: 0, windowStart: 0 };
 
+    let wakeLockSentinel = null;
+    let elapsedIntervalId = null;
+    let recordingStartedAt = 0;
+    let fullscreenWarningShown = false;
+
+    // =====================================================================
+    // GENERIC SLIDE-TO-CONFIRM
+    // trackEl: outer track, thumbEl: draggable circle, onComplete: callback
+    // fired only when dragged past `completeThreshold` (fraction of travel)
+    // =====================================================================
+    function initSlideToConfirm(trackEl, thumbEl, onComplete, completeThreshold = 0.85) {
+      let dragging = false;
+      let maxTravel = 0;
+
+      function getMaxTravel() {
+        return trackEl.clientWidth - thumbEl.clientWidth - 6; // 3px padding each side
+      }
+
+      function onPointerDown(e) {
+        dragging = true;
+        maxTravel = getMaxTravel();
+        thumbEl.setPointerCapture(e.pointerId);
+        thumbEl.style.transition = 'none';
+      }
+
+      function onPointerMove(e) {
+        if (!dragging) return;
+        const trackRect = trackEl.getBoundingClientRect();
+        let x = e.clientX - trackRect.left - thumbEl.clientWidth / 2;
+        x = Math.max(0, Math.min(x, maxTravel));
+        thumbEl.style.left = `${x}px`;
+      }
+
+      function onPointerUp(e) {
+        if (!dragging) return;
+        dragging = false;
+        thumbEl.style.transition = 'left 0.2s ease';
+
+        const currentLeft = parseFloat(thumbEl.style.left) || 0;
+        const fraction = maxTravel > 0 ? currentLeft / maxTravel : 0;
+
+        if (fraction >= completeThreshold) {
+          thumbEl.style.left = `${maxTravel}px`;
+          onComplete(); // synchronous, within this user-gesture handler
+        } else {
+          thumbEl.style.left = '0px'; // snap back — nothing happened
+        }
+      }
+
+      thumbEl.addEventListener('pointerdown', onPointerDown);
+      thumbEl.addEventListener('pointermove', onPointerMove);
+      thumbEl.addEventListener('pointerup', onPointerUp);
+      thumbEl.addEventListener('pointercancel', onPointerUp);
+
+      return {
+        reset() {
+          thumbEl.style.transition = 'none';
+          thumbEl.style.left = '0px';
+        }
+      };
+    }
+
+    // =====================================================================
+    // RECORD VIEW ELEMENTS
+    // =====================================================================
     const statusEl = document.getElementById('status');
     const uploadStatusEl = document.getElementById('uploadStatus');
-    const startBtn = document.getElementById('startBtn');
-    const stopBtn = document.getElementById('stopBtn');
     const labelInput = document.getElementById('sessionLabel');
+    const overlay = document.getElementById('pocketOverlay');
+    const overlayElapsed = document.getElementById('overlayElapsed');
+
+    function vibrate(pattern) {
+      if ('vibrate' in navigator) navigator.vibrate(pattern);
+    }
+
+    async function acquireWakeLock() {
+      if (!('wakeLock' in navigator)) {
+        console.warn('Wake Lock API not supported on this browser.');
+        return null;
+      }
+      try {
+        const sentinel = await navigator.wakeLock.request('screen');
+        sentinel.addEventListener('release', () => console.log('Wake lock released.'));
+        return sentinel;
+      } catch (err) {
+        console.error(`Wake lock request failed: ${err.name}: ${err.message}`);
+        return null;
+      }
+    }
+
+    async function handleVisibilityChange() {
+      if (recording && document.visibilityState === 'visible' && wakeLockSentinel === null) {
+        wakeLockSentinel = await acquireWakeLock();
+      }
+    }
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
+    // Detects if fullscreen drops out WHILE still recording — a strong
+    // signal that an edge-swipe/backgrounding event got through despite
+    // the Fullscreen API. Doesn't stop the recording (we can't know for
+    // sure data was lost), just flags it honestly after the fact.
+    document.addEventListener('fullscreenchange', () => {
+      if (recording && !document.fullscreenElement && !fullscreenWarningShown) {
+        fullscreenWarningShown = true;
+        statusEl.textContent =
+          'Warning: fullscreen exited unexpectedly during recording — check this capture for a gap.';
+        statusEl.style.color = '#f44';
+      }
+    });
 
     function updateHz(counter, displayEl, ts) {
       if (counter.windowStart === 0) counter.windowStart = ts;
@@ -87,30 +279,90 @@
       }
     }
 
-    startBtn.onclick = async () => {
+    function tickElapsed() {
+      const elapsedS = Math.floor((Date.now() - recordingStartedAt) / 1000);
+      const mins = Math.floor(elapsedS / 60);
+      const secs = elapsedS % 60;
+      const display = `${mins}:${secs.toString().padStart(2, '0')}`;
+      overlayElapsed.textContent = display;
+    }
+
+    // ---------------------------------------------------------------
+    // START: called synchronously from the Slide-to-Start onComplete,
+    // so requestFullscreen() still has valid user-activation.
+    // ---------------------------------------------------------------
+    function startRecording() {
+      if (document.documentElement.requestFullscreen) {
+        document.documentElement.requestFullscreen().catch(err => {
+          console.warn('Fullscreen request failed:', err);
+        });
+      }
+
       accelBuffer = [];
       gyroBuffer = [];
       accelHzCounter = { count: 0, windowStart: 0 };
       gyroHzCounter = { count: 0, windowStart: 0 };
       uploadStatusEl.textContent = '';
+      document.getElementById('results').innerHTML = '';
+      fullscreenWarningShown = false;
+      statusEl.style.color = '#ff0';
+
+      recordingStartedAt = Date.now();
+      vibrate(200);
 
       window.addEventListener('devicemotion', onMotion);
       recording = true;
       statusEl.textContent = 'Recording...';
-      startBtn.disabled = true;
-      stopBtn.disabled = false;
       labelInput.disabled = true;
-    };
 
-    stopBtn.onclick = async () => {
+      acquireWakeLock().then(sentinel => { wakeLockSentinel = sentinel; });
+
+      overlay.style.display = 'flex';
+      stopSlider.reset();
+      tickElapsed();
+      elapsedIntervalId = setInterval(tickElapsed, 1000);
+    }
+
+    async function stopRecording() {
+      if (!recording) return;
       recording = false;
+
+      clearInterval(elapsedIntervalId);
       window.removeEventListener('devicemotion', onMotion);
-      statusEl.textContent = `Stopped. Captured ${accelBuffer.length} accel samples, ${gyroBuffer.length} gyro samples.`;
-      startBtn.disabled = false;
-      stopBtn.disabled = true;
+
+      if (wakeLockSentinel) {
+        try { await wakeLockSentinel.release(); } catch (e) {}
+        wakeLockSentinel = null;
+      }
+      if (document.fullscreenElement) {
+        try { await document.exitFullscreen(); } catch (e) {}
+      }
+
+      overlay.style.display = 'none';
+      startSlider.reset();
+
+      vibrate([100, 100, 100]);
+
+      if (!fullscreenWarningShown) {
+        statusEl.textContent = `Stopped. Captured ${accelBuffer.length} accel samples, ${gyroBuffer.length} gyro samples.`;
+      }
       labelInput.disabled = false;
 
-      // Send to backend
+      await uploadCapture();
+    }
+
+    const startSlider = initSlideToConfirm(
+      document.getElementById('startSlideTrack'),
+      document.getElementById('startSlideThumb'),
+      startRecording
+    );
+    const stopSlider = initSlideToConfirm(
+      document.getElementById('stopSlideTrack'),
+      document.getElementById('stopSlideThumb'),
+      stopRecording
+    );
+
+    async function uploadCapture() {
       uploadStatusEl.textContent = 'Uploading...';
       try {
         const response = await fetch(BACKEND_URL, {
@@ -124,37 +376,36 @@
         });
         const result = await response.json();
         if (result.status === 'ok') {
-  uploadStatusEl.textContent =
-    `Uploaded as "${result.session_id}" (${result.accel_samples} accel, ${result.gyro_samples} gyro samples)`;
+          uploadStatusEl.textContent =
+            `Uploaded as "${result.session_id}" (${result.accel_samples} accel, ${result.gyro_samples} gyro samples)`;
 
-  const resultsEl = document.getElementById('results');
-  if (result.sets && result.sets.length > 0) {
-    let html = '<h3 style="color:#0f0;">Detected Exercises</h3>';
-    result.sets.forEach(set => {
-      html += `
-        <div style="border:1px solid #444; padding:10px; margin:8px 0; border-radius:6px;">
-          <div style="color:#0ff; font-size:18px;">${set.label}</div>
-          <div class="row"><span class="label">Reps:</span> ${set.estimated_reps ?? '-'}</div>
-          <div class="row"><span class="label">Duration:</span> ${set.duration_s?.toFixed(1) ?? '-'}s</div>
-          <div class="row"><span class="label">Quality score:</span> ${set.quality_score?.toFixed(0) ?? '-'}</div>
-          <div class="row"><span class="label">Feedback:</span> ${set.feedback ?? '-'}</div>
-        </div>`;
-    });
-    resultsEl.innerHTML = html;
-  } else {
-    resultsEl.innerHTML = '<div style="color:#f80;">No exercise sets detected.</div>';
-  }
-} else {
+          const resultsEl = document.getElementById('results');
+          if (result.sets && result.sets.length > 0) {
+            let html = '<h3 style="color:#0f0;">Detected Exercises</h3>';
+            result.sets.forEach(set => {
+              html += `
+                <div style="border:1px solid #444; padding:10px; margin:8px 0; border-radius:6px;">
+                  <div style="color:#0ff; font-size:18px;">${set.label}</div>
+                  <div class="row"><span class="label">Reps:</span> ${set.estimated_reps ?? '-'}</div>
+                  <div class="row"><span class="label">Duration:</span> ${set.duration_s?.toFixed(1) ?? '-'}s</div>
+                  <div class="row"><span class="label">Quality score:</span> ${set.quality_score?.toFixed(0) ?? '-'}</div>
+                  <div class="row"><span class="label">Feedback:</span> ${set.feedback ?? '-'}</div>
+                </div>`;
+            });
+            resultsEl.innerHTML = html;
+          } else {
+            resultsEl.innerHTML = '<div style="color:#f80;">No exercise sets detected.</div>';
+          }
+        } else {
           uploadStatusEl.textContent = `Upload error: ${result.message}`;
         }
       } catch (err) {
         uploadStatusEl.textContent = `Upload failed: ${err.message} (is the backend running on port 8001?)`;
       }
-    };
+    }
 
     if (typeof DeviceMotionEvent === 'undefined') {
       statusEl.textContent = 'ERROR: DeviceMotionEvent not supported on this browser.';
-      startBtn.disabled = true;
     }
   </script>
 </body>

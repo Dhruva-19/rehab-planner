@@ -199,3 +199,4 @@ def ingest_session(payload: SessionPayload):
 @app.get("/health")
 def health():
     return {"status": "backend is running", "model_loaded": _model_bundle is not None}
+

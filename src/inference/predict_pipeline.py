@@ -45,7 +45,7 @@ from extract_advanced_features import extract_advanced_features_single_window
 # -----------------------------
 # Config
 # -----------------------------
-MODEL_PATH = "saved_models/xgboost_v2_orientation_features.pkl"
+MODEL_PATH = "saved_models/xgboost_v4_augmented.pkl"
 WINDOWS_NPZ_PATH = "saved_models/label_names.npz"  # only read for label_names
 
 

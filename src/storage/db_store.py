@@ -1,0 +1,256 @@
+"""
+src/storage/db_store.py
+
+Purpose (Day 26, step 1b): every function the app calls to read or write the
+database. It sits on top of db_core.py (engine + tables) and auth_utils.py
+(hashing), and replaces the old db.py for the multi-user app.
+
+What changed compared with the old db.py
+----------------------------------------
+* Every session belongs to a user: save_session() and list_sessions() take a
+  user_id, and get_sets_for_session() refuses to return a session that belongs
+  to someone else (prevents one user reading another's data by guessing an id).
+* New account functions: create_user, authenticate.
+* New login-token functions: create_login_token, get_user_by_token,
+  delete_login_token.
+* migrate_add_scoring_columns() is gone: the fresh database already has all
+  columns.
+
+Import style: the project adds src/storage to sys.path and imports modules by
+plain name (same as the old `from db import ...`).
+"""
+
+from datetime import datetime, timedelta, timezone
+
+import pandas as pd
+from sqlalchemy import delete, insert, select
+from sqlalchemy.exc import IntegrityError
+
+from auth_utils import (
+    hash_password, hash_token, new_token, normalize_username,
+    validate_credentials, verify_password,
+)
+from db_core import engine, init_db, login_tokens, sessions, sets, users
+
+TOKEN_LIFETIME_DAYS = 30
+
+
+def _now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+# ================================================================== accounts ==
+def create_user(username: str, password: str) -> int:
+    """
+    Register a new account and return its id.
+    Raises ValueError with a user-friendly message if the username/password is
+    invalid or the username is already taken.
+    """
+    username = normalize_username(username)
+    error = validate_credentials(username, password)
+    if error:
+        raise ValueError(error)
+
+    try:
+        with engine.begin() as conn:
+            result = conn.execute(
+                insert(users).values(
+                    username=username,
+                    password_hash=hash_password(password),
+                    created_at=_now().isoformat(),
+                )
+            )
+            return int(result.inserted_primary_key[0])
+    except IntegrityError as e:
+        raise ValueError("That username is already taken.") from e
+
+
+_dummy_hash: str | None = None
+
+
+def _get_dummy_hash() -> str:
+    """A throw-away hash, built once, used to equalise login timing."""
+    global _dummy_hash
+    if _dummy_hash is None:
+        _dummy_hash = hash_password("not-a-real-password")
+    return _dummy_hash
+
+
+def authenticate(username: str, password: str) -> int | None:
+    """Return the user's id if the credentials are correct, else None."""
+    username = normalize_username(username)
+    with engine.connect() as conn:
+        row = conn.execute(
+            select(users.c.id, users.c.password_hash)
+            .where(users.c.username == username)
+        ).first()
+
+    if row is None:
+        # Do the same slow hashing work as a real check, so the response time
+        # does not reveal whether this username exists.
+        verify_password(password, _get_dummy_hash())
+        return None
+    return int(row.id) if verify_password(password, row.password_hash) else None
+
+
+# ============================================================ login tokens ==
+def create_login_token(user_id: int) -> str:
+    """
+    Create a login for this user and return the RAW token (put it in the
+    cookie). Only its hash is stored in the database.
+    """
+    token = new_token()
+    now = _now()
+    with engine.begin() as conn:
+        conn.execute(
+            insert(login_tokens).values(
+                token_hash=hash_token(token),
+                user_id=user_id,
+                created_at=now.isoformat(),
+                expires_at=(now + timedelta(days=TOKEN_LIFETIME_DAYS)).isoformat(),
+            )
+        )
+    return token
+
+
+def get_user_by_token(token: str | None) -> dict | None:
+    """Return {'id', 'username'} for a valid, unexpired token; else None."""
+    if not token:
+        return None
+
+    with engine.connect() as conn:
+        row = conn.execute(
+            select(users.c.id, users.c.username, login_tokens.c.expires_at)
+            .join(login_tokens, login_tokens.c.user_id == users.c.id)
+            .where(login_tokens.c.token_hash == hash_token(token))
+        ).first()
+
+    if row is None:
+        return None
+    if datetime.fromisoformat(row.expires_at) <= _now():
+        delete_login_token(token)          # tidy up the expired row
+        return None
+    return {"id": int(row.id), "username": row.username}
+
+
+def delete_login_token(token: str) -> None:
+    """Log out: remove this login (other devices stay logged in)."""
+    with engine.begin() as conn:
+        conn.execute(
+            delete(login_tokens).where(login_tokens.c.token_hash == hash_token(token))
+        )
+
+
+# ================================================== sessions and their sets ==
+def _seconds_to_mmss(seconds: float) -> str:
+    """37.5 -> '00:37'. Truncates sub-second precision (display only)."""
+    minutes, secs = divmod(int(seconds), 60)
+    return f"{minutes:02d}:{secs:02d}"
+
+
+def _to_sql_real(value) -> float | None:
+    """pandas NaN -> None (SQL NULL); NaN must never reach the database."""
+    if value is None:
+        return None
+    if isinstance(value, float) and pd.isna(value):
+        return None
+    return float(value)
+
+
+_REQUIRED_COLS = {
+    "label", "start_time", "end_time", "duration_s", "num_windows",
+    "mean_confidence", "confidence_std", "raw_agreement", "is_short",
+    "estimated_reps", "quality_score", "feedback",
+}
+
+
+def save_session(scored_df: pd.DataFrame, session_id: str, source_name: str,
+                 user_id: int) -> None:
+    """
+    Persist one session's SCORED sets for `user_id` (all-or-nothing: if any
+    insert fails, nothing is saved).
+
+    scored_df is the output of quality_scorer.score_sets(), exactly as before.
+    Raises ValueError for an empty/incorrect dataframe, a duplicate session_id,
+    or an unknown user_id.
+    """
+    if scored_df.empty:
+        raise ValueError("save_session received an empty scored_df — nothing to store.")
+
+    missing = _REQUIRED_COLS - set(scored_df.columns)
+    if missing:
+        raise ValueError(
+            f"save_session expects the SCORED dataframe (quality_scorer.score_sets "
+            f"output). Missing columns: {sorted(missing)}."
+        )
+
+    session_start_epoch = float(scored_df["start_time"].iloc[0])
+    session_end_epoch = float(scored_df["end_time"].iloc[-1])
+
+    set_rows = []
+    for idx, row in enumerate(scored_df.itertuples(index=False), start=1):
+        elapsed_start_s = float(row.start_time) - session_start_epoch
+        elapsed_end_s = float(row.end_time) - session_start_epoch
+        set_rows.append({
+            "session_id": session_id,
+            "set_index": idx,
+            "label": row.label,
+            "start_time_epoch": float(row.start_time),
+            "end_time_epoch": float(row.end_time),
+            "elapsed_start_s": elapsed_start_s,
+            "elapsed_end_s": elapsed_end_s,
+            "start_mmss": _seconds_to_mmss(elapsed_start_s),
+            "end_mmss": _seconds_to_mmss(elapsed_end_s),
+            "duration_s": float(row.duration_s),
+            "num_windows": int(row.num_windows),
+            "mean_confidence": float(row.mean_confidence),
+            "confidence_std": _to_sql_real(row.confidence_std),
+            "raw_agreement": _to_sql_real(row.raw_agreement),
+            "is_short": int(bool(row.is_short)),
+            "estimated_reps": _to_sql_real(row.estimated_reps),
+            "quality_score": _to_sql_real(row.quality_score),
+            "feedback": None if pd.isna(row.feedback) else str(row.feedback),
+        })
+
+    try:
+        with engine.begin() as conn:          # one transaction
+            conn.execute(
+                insert(sessions).values(
+                    session_id=session_id,
+                    user_id=user_id,
+                    source_name=source_name,
+                    uploaded_at=_now().isoformat(),
+                    session_start_epoch=session_start_epoch,
+                    total_duration_s=session_end_epoch - session_start_epoch,
+                )
+            )
+            conn.execute(insert(sets), set_rows)
+    except IntegrityError as e:
+        raise ValueError(
+            f"Could not save session '{session_id}': the id already exists "
+            f"or the user does not exist."
+        ) from e
+
+
+def list_sessions(user_id: int) -> pd.DataFrame:
+    """This user's sessions, most recent upload first."""
+    query = (
+        select(sessions)
+        .where(sessions.c.user_id == user_id)
+        .order_by(sessions.c.uploaded_at.desc())
+    )
+    return pd.read_sql_query(query, engine)
+
+
+def get_sets_for_session(session_id: str, user_id: int) -> pd.DataFrame:
+    """
+    All sets of one session in set_index order -- but only if the session
+    belongs to `user_id`. For anyone else the result is simply empty.
+    """
+    query = (
+        select(sets)
+        .join(sessions, sets.c.session_id == sessions.c.session_id)
+        .where(sets.c.session_id == session_id, sessions.c.user_id == user_id)
+        .order_by(sets.c.set_index)
+    )
+    return pd.read_sql_query(query, engine)

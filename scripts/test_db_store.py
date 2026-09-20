@@ -1,0 +1,106 @@
+"""
+scripts/test_db_store.py
+
+Purpose: verify db_store.py end to end. It runs against a THROWAWAY database
+in a temp folder, so your real rehab_planner_v2.db is never touched.
+
+Run from the project root:   py -3.12 scripts/test_db_store.py
+"""
+
+import os
+import sys
+import tempfile
+from pathlib import Path
+
+# --- point the app at a throwaway database BEFORE importing db_core ---------
+_tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+os.environ["DATABASE_URL"] = f"sqlite:///{(Path(_tmp.name) / 'test.db').as_posix()}"
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src" / "storage"))
+
+import pandas as pd
+from sqlalchemy import update
+
+import db_store as store
+from db_core import engine, login_tokens
+
+
+def expect_error(fn, *args, **kwargs):
+    """Assert that fn raises ValueError; return the message."""
+    try:
+        fn(*args, **kwargs)
+    except ValueError as e:
+        return str(e)
+    raise AssertionError(f"{fn.__name__} should have raised ValueError")
+
+
+def make_scored_df() -> pd.DataFrame:
+    """A tiny SCORED dataframe with two sets (one with NaNs, like a rest set)."""
+    return pd.DataFrame({
+        "label": ["squats", "non_activity"],
+        "start_time": [1_700_000_000.0, 1_700_000_030.0],
+        "end_time": [1_700_000_030.0, 1_700_000_045.0],
+        "duration_s": [30.0, 15.0],
+        "num_windows": [10, 5],
+        "mean_confidence": [0.9, 0.8],
+        "confidence_std": [0.05, float("nan")],
+        "raw_agreement": [0.95, float("nan")],
+        "is_short": [False, False],
+        "estimated_reps": [9.0, float("nan")],
+        "quality_score": [95.0, float("nan")],
+        "feedback": ["Good form and consistency.", None],
+    })
+
+
+store.init_db()
+
+# --- accounts ---------------------------------------------------------------
+a = store.create_user("  Alice ", "password123")          # normalised to 'alice'
+b = store.create_user("bob_1", "password456")
+assert a != b
+assert "already taken" in expect_error(store.create_user, "ALICE", "another-pass-1")
+assert expect_error(store.create_user, "x!", "password123")     # bad username
+assert expect_error(store.create_user, "carol", "short")        # bad password
+
+assert store.authenticate("alice", "password123") == a
+assert store.authenticate("ALICE ", "password123") == a         # normalised
+assert store.authenticate("alice", "wrong-password") is None
+assert store.authenticate("nobody", "password123") is None
+print("accounts: OK")
+
+# --- login tokens -----------------------------------------------------------
+token = store.create_login_token(a)
+assert store.get_user_by_token(token) == {"id": a, "username": "alice"}
+assert store.get_user_by_token("garbage") is None
+assert store.get_user_by_token(None) is None
+
+store.delete_login_token(token)                                 # logout
+assert store.get_user_by_token(token) is None
+
+token2 = store.create_login_token(a)                            # expired token
+with engine.begin() as conn:
+    conn.execute(update(login_tokens).values(expires_at="2000-01-01T00:00:00+00:00"))
+assert store.get_user_by_token(token2) is None
+print("login tokens: OK")
+
+# --- sessions and sets (per-user scoping) ------------------------------------
+store.save_session(make_scored_df(), "s1", "Squats.csv", user_id=a)
+
+assert len(store.list_sessions(a)) == 1
+assert len(store.list_sessions(b)) == 0                          # bob sees nothing
+
+mine = store.get_sets_for_session("s1", a)
+assert list(mine["label"]) == ["squats", "non_activity"]
+assert mine["start_mmss"].tolist() == ["00:00", "00:30"]
+assert pd.isna(mine.loc[1, "quality_score"])                     # NaN stored as NULL
+assert store.get_sets_for_session("s1", b).empty                 # ownership check
+
+assert "id already exists" in expect_error(
+    store.save_session, make_scored_df(), "s1", "dup.csv", a)
+assert "user does not exist" in expect_error(
+    store.save_session, make_scored_df(), "s2", "x.csv", 999)
+assert len(store.list_sessions(a)) == 1                          # failed saves left nothing
+print("sessions/sets: OK")
+
+print("\nAll db_store checks passed.")
+engine.dispose()

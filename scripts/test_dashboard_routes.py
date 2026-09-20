@@ -121,6 +121,8 @@ assert '<span class="num">1</span><span class="lbl">Best streak</span>' in page
 assert '<span class="num">2</span><span class="lbl">This week</span>' in page
 assert "You have trained today." in page
 assert "tz_offset_min" in page and dashboard_routes.TZ_COOKIE == "tz_offset_min"
+assert 'href="/sessions/s1/report.pdf"' in page and 'href="/sessions/s2/report.pdf"' in page
+assert page.count("Download report (PDF)") == 2
 print("numbers + sessions: OK")
 
 # --- another user sees none of it --------------------------------------------------------

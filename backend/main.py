@@ -13,7 +13,8 @@ SAME pipeline app.py uses:
 
 Day 26: the dashboard (/), the capture page (/capture) and /ingest now require
 login. Login/register/logout live in auth_routes.py; the dashboard lives in
-dashboard_routes.py. NOTE: the old Streamlit app.py still reads the
+dashboard_routes.py; PDF
+reports in report_routes.py. NOTE: the old Streamlit app.py still reads the
 old db.py / rehab_planner.db, so it no longer sees sessions captured here.
 
 The model bundle is loaded ONCE at server startup (not per-request) -
@@ -43,6 +44,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.append(str(PROJECT_ROOT / "src" / "inference"))
 sys.path.append(str(PROJECT_ROOT / "src" / "feedback"))
 sys.path.append(str(PROJECT_ROOT / "src" / "storage"))
+sys.path.append(str(PROJECT_ROOT / "src" / "reporting"))
 sys.path.append(str(Path(__file__).resolve().parent))   # backend/, for auth_routes
 
 from predict_pipeline import predict_from_raw_csv, load_model_bundle, MODEL_PATH, WINDOWS_NPZ_PATH  # noqa: E402
@@ -51,6 +53,7 @@ from quality_scorer import score_sets, session_summary  # noqa: E402
 from db_store import init_db, save_session  # noqa: E402
 from auth_routes import router as auth_router, require_user_api, require_user_page  # noqa: E402
 from dashboard_routes import router as dashboard_router  # noqa: E402
+from report_routes import router as report_router  # noqa: E402
 
 # Same convention as sensorlogger_to_upload_csv.py: data/sample_upload,
 # anchored to PROJECT_ROOT so it resolves to the same folder regardless
@@ -78,6 +81,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Rehab Planner Ingest API", lifespan=lifespan)
 app.include_router(auth_router)          # /login /register /logout /api/me
 app.include_router(dashboard_router)     # /  (the dashboard, landing page after login)
+app.include_router(report_router)        # /sessions/<id>/report.pdf
 from fastapi.responses import FileResponse
 
 @app.get("/capture")

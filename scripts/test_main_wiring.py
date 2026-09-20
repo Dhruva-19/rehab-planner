@@ -47,6 +47,8 @@ for page in ("/", "/capture"):
     assert r.status_code == 303 and r.headers["location"] == "/login", page
 
 assert client.post("/ingest", json={}).status_code == 401
+r = client.get("/sessions/anything/report.pdf", **NO_FOLLOW)      # PDF reports need login too
+assert r.status_code == 303 and r.headers["location"] == "/login"
 tiny = {"session_name": "x",
         "accel": [{"t": 0, "x": 0, "y": 0, "z": 9.8}],
         "gyro": [{"t": 0, "x": 0, "y": 0, "z": 0}]}

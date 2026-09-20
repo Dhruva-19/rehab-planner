@@ -9,10 +9,20 @@ physiotherapist, or as a leave-behind artifact for a viva demo.
 Design note: color bands (SCORE_GOOD/OK/BAD/NA) intentionally match
 app.py's _score_color() thresholds (85 / 60 / 0) exactly, so the PDF
 and the live dashboard never visually disagree.
+
+Day 26 hardening (the report is now served from the web app):
+  * ReportLab's Paragraph parses its text as XML-like markup, so any text that
+    came from a user or the database (session label, feedback) is escaped
+    first. Unescaped, a label like "<b>x" crashes the report, and markup such
+    as <img src=...> could make ReportLab try to load a file or URL.
+  * A missing (NULL) feedback cell now shows "-" instead of "None".
+  * An average quality score of NaN (a session with no scored sets) now shows
+    "N/A" instead of "nan".
 """
 
 from io import BytesIO
 from datetime import datetime, timezone
+from xml.sax.saxutils import escape
 
 import pandas as pd
 from reportlab.lib import colors
@@ -62,7 +72,9 @@ def _format_cell(col: str, val, small_style: ParagraphStyle):
         return f"{val:.3f}" if (col == "mean_confidence" and pd.notna(val)) else \
                (f"{val:.1f}" if pd.notna(val) else "-")
     if col == "feedback":
-        return Paragraph(str(val), small_style)
+        if val is None or pd.isna(val):
+            return "-"
+        return Paragraph(escape(str(val)), small_style)
     return str(val)
 
 
@@ -95,15 +107,16 @@ def generate_session_pdf_report(scored_df: pd.DataFrame,
 
     # --- Header ---
     story.append(Paragraph("AI Personalized Rehabilitation Planner", styles["Title"]))
-    story.append(Paragraph(f"Session Report: {session_label}", styles["Heading2"]))
+    story.append(Paragraph(f"Session Report: {escape(str(session_label))}", styles["Heading2"]))
     generated_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     story.append(Paragraph(f"Generated: {generated_at}", styles["Normal"]))
     story.append(Spacer(1, 12))
 
     # --- Summary block ---
     avg_score = summary.get("avg_quality_score")
+    has_avg = avg_score is not None and pd.notna(avg_score)
     for line in [
-        f"Average Quality Score: {avg_score:.1f}" if avg_score is not None else "Average Quality Score: N/A",
+        f"Average Quality Score: {avg_score:.1f}" if has_avg else "Average Quality Score: N/A",
         f"Scored Sets: {summary.get('num_scored_sets', 0)}",
         f"Short Sets Flagged: {summary.get('num_short_sets', 0)}",
     ]:

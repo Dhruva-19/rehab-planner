@@ -11,6 +11,7 @@ What changed compared with the old db.py
   user_id, and get_sets_for_session() refuses to return a session that belongs
   to someone else (prevents one user reading another's data by guessing an id).
 * New account functions: create_user, authenticate.
+* Session lookup (Day 26): get_session (used by the PDF report).
 * Dashboard queries (Day 26): get_summary, get_recent_sessions,
   get_exercise_session_times (for the streak tiles).
 * Weekly goal (Day 26): get_weekly_goal, set_weekly_goal, clear_weekly_goal.
@@ -243,6 +244,20 @@ def list_sessions(user_id: int) -> pd.DataFrame:
         .order_by(sessions.c.uploaded_at.desc())
     )
     return pd.read_sql_query(query, engine)
+
+
+def get_session(session_id: str, user_id: int) -> dict | None:
+    """
+    One session's columns as a dict -- but only if it belongs to `user_id`.
+    Returns None for an unknown id AND for someone else's session, so callers
+    cannot tell the two apart (nothing leaks about other users' ids).
+    """
+    with engine.connect() as conn:
+        row = conn.execute(
+            select(sessions)
+            .where(sessions.c.session_id == session_id, sessions.c.user_id == user_id)
+        ).mappings().first()
+    return None if row is None else dict(row)
 
 
 def get_sets_for_session(session_id: str, user_id: int) -> pd.DataFrame:

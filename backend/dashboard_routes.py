@@ -30,6 +30,7 @@ Look: same dark green-mono style as the login pages (shares their base CSS).
 import html
 from datetime import datetime, timezone
 from statistics import mean
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -112,6 +113,9 @@ details.session[open] summary::after{content:"\\25B4"}
       border:1px solid var(--border);border-radius:22px;font-size:1rem;font-weight:normal}
 .pill:active{opacity:1;border-color:var(--green)}
 .goalForm{margin-top:8px}
+.dl{display:inline-block;margin-top:12px;padding:10px 16px;border:1px solid var(--green);
+    border-radius:20px;color:var(--green);text-decoration:none;font-size:.9rem}
+.dl:active{opacity:.7}
 .danger{margin-top:28px;text-align:center}
 """
 
@@ -158,7 +162,7 @@ def _reps(value) -> str:
 def _quality_class(score) -> str:
     if score is None:
         return ""
-    if score >= 80:
+    if score >= 85:                       # same bands as pdf_report.py and app.py
         return "q-good"
     return "q-ok" if score >= 60 else "q-low"
 
@@ -309,6 +313,9 @@ def _session_html(session: dict) -> str:
     else:
         body = '<div class="meta">No exercise sets were detected in this recording.</div>'
 
+    # Session ids are made of letters, digits, "_" and "-" (main.py sanitises the
+    # name), so this link is safe; quote() + escape keep it safe regardless.
+    report_url = f"/sessions/{quote(session['session_id'], safe='')}/report.pdf"
     return f"""
 <details class="session">
   <summary>
@@ -316,7 +323,9 @@ def _session_html(session: dict) -> str:
     <div class="stime">{_time_tag(session["uploaded_at"])}</div>
     <div class="chips">{chips}</div>
   </summary>
-  <div class="setlist">{body}</div>
+  <div class="setlist">{body}
+    <a class="dl" href="{_esc(report_url)}">Download report (PDF)</a>
+  </div>
 </details>"""
 
 

@@ -95,6 +95,11 @@ assert mine["start_mmss"].tolist() == ["00:00", "00:30"]
 assert pd.isna(mine.loc[1, "quality_score"])                     # NaN stored as NULL
 assert store.get_sets_for_session("s1", b).empty                 # ownership check
 
+one = store.get_session("s1", a)                                 # single-session lookup
+assert one["session_id"] == "s1" and one["source_name"] == "Squats.csv" and one["user_id"] == a
+assert store.get_session("s1", b) is None                        # someone else's -> None
+assert store.get_session("nope", a) is None                      # unknown -> None (same answer)
+
 assert "id already exists" in expect_error(
     store.save_session, make_scored_df(), "s1", "dup.csv", a)
 assert "user does not exist" in expect_error(

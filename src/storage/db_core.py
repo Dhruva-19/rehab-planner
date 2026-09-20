@@ -39,6 +39,14 @@ def _get_database_url() -> str:
     url = os.environ.get("DATABASE_URL", "").strip()
 
     if not url:
+        # Render sets RENDER=true. Its disk is wiped on every restart, so a
+        # local SQLite file there would silently lose every user and session.
+        # Refuse to start instead of quietly falling back to it.
+        if os.environ.get("RENDER", "").strip().lower() in ("1", "true", "yes"):
+            raise RuntimeError(
+                "DATABASE_URL is not set. On Render, add it under Environment "
+                "(the Neon connection string); SQLite would be erased on restart."
+            )
         DEFAULT_SQLITE_PATH.parent.mkdir(parents=True, exist_ok=True)
         # as_posix() keeps Windows paths in the "C:/Users/..." form SQLAlchemy expects.
         return f"sqlite:///{DEFAULT_SQLITE_PATH.as_posix()}"

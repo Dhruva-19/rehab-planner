@@ -155,5 +155,28 @@ assert store.get_weekly_goal(a) is None and store.get_weekly_goal(b) == 1
 store.clear_weekly_goal(a)                                          # clearing twice is fine
 print("weekly goal: OK")
 
+# --- deployment safety: on Render a missing DATABASE_URL must fail loudly ----------------
+import db_core
+
+saved = {k: os.environ.get(k) for k in ("DATABASE_URL", "RENDER")}
+try:
+    os.environ.pop("DATABASE_URL", None)
+    os.environ["RENDER"] = "true"
+    try:
+        db_core._get_database_url()
+        raise AssertionError("expected a RuntimeError on Render without DATABASE_URL")
+    except RuntimeError as e:
+        assert "DATABASE_URL is not set" in str(e)
+
+    os.environ["DATABASE_URL"] = "postgres://user:pw@host/db?sslmode=require"      # Render + URL: fine
+    assert db_core._get_database_url() == "postgresql+psycopg2://user:pw@host/db?sslmode=require"
+finally:
+    for key, value in saved.items():
+        if value is None:
+            os.environ.pop(key, None)
+        else:
+            os.environ[key] = value
+print("Render without DATABASE_URL fails loudly: OK")
+
 print("\nAll db_store checks passed.")
 engine.dispose()

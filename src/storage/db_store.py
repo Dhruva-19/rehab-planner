@@ -11,7 +11,8 @@ What changed compared with the old db.py
   user_id, and get_sets_for_session() refuses to return a session that belongs
   to someone else (prevents one user reading another's data by guessing an id).
 * New account functions: create_user, authenticate.
-* Dashboard queries (Day 26): get_summary, get_recent_sessions.
+* Dashboard queries (Day 26): get_summary, get_recent_sessions,
+  get_exercise_session_times (for the streak tiles).
 * New login-token functions: create_login_token, get_user_by_token,
   delete_login_token.
 * migrate_add_scoring_columns() is gone: the fresh database already has all
@@ -24,7 +25,7 @@ plain name (same as the old `from db import ...`).
 from datetime import datetime, timedelta, timezone
 
 import pandas as pd
-from sqlalchemy import delete, func, insert, select
+from sqlalchemy import delete, exists, func, insert, select
 from sqlalchemy.exc import IntegrityError
 
 from auth_utils import (
@@ -321,3 +322,23 @@ def get_recent_sessions(user_id: int, limit: int = 10) -> list[dict]:
 
     return [{**dict(row), "sets": sets_by_session[row["session_id"]]}
             for row in session_rows]
+
+
+def get_exercise_session_times(user_id: int) -> list[str]:
+    """
+    Upload time (UTC ISO string, oldest first) of every session of this user
+    that contains at least one real exercise set. Rest-only recordings are
+    skipped, so they never count towards a streak. The caller converts the
+    times to the user's local calendar days.
+    """
+    has_exercise_set = exists().where(
+        sets.c.session_id == sessions.c.session_id,
+        sets.c.label != REST_LABEL,
+    )
+    with engine.connect() as conn:
+        rows = conn.execute(
+            select(sessions.c.uploaded_at)
+            .where(sessions.c.user_id == user_id, has_exercise_set)
+            .order_by(sessions.c.uploaded_at)
+        ).all()
+    return [row[0] for row in rows]

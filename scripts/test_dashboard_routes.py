@@ -2,7 +2,8 @@
 scripts/test_dashboard_routes.py
 
 Purpose: check the dashboard page end to end (login guard, empty state, real
-numbers, per-user isolation, HTML escaping, the "latest 10" limit) using
+numbers, streak tiles and their local-time-zone handling, per-user isolation,
+HTML escaping, the "latest 10" limit) using
 FastAPI's TestClient and a THROWAWAY database. Your real database is untouched.
 
 Run from the project root, inside your fastapi-env:
@@ -23,14 +24,17 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src" / "storage"))
 sys.path.insert(0, str(ROOT / "backend"))
 
+from datetime import datetime, timezone
+
 import pandas as pd
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from sqlalchemy import update
 
 import auth_routes
 import dashboard_routes
 import db_store
-from db_core import engine
+from db_core import engine, sessions as sessions_table
 
 db_store.init_db()
 
@@ -82,6 +86,8 @@ assert 'href="/capture"' in r.text and 'action="/logout"' in r.text
 assert r.headers["cache-control"] == "no-store"
 assert '<span class="num">0</span><span class="lbl">Sessions</span>' in r.text
 assert '<span class="num">-</span><span class="lbl">Avg quality</span>' in r.text
+assert '<span class="num">0</span><span class="lbl">Day streak</span>' in r.text
+assert "Record a session today to start a streak." in r.text
 print("empty state: OK")
 
 # --- real numbers ----------------------------------------------------------------------
@@ -105,6 +111,11 @@ assert page.index("Squats_morning") > page.index("&lt;script&gt;")              
 assert "<script>alert(1)</script>" not in page                                       # escaped
 assert "&lt;script&gt;alert(1)&lt;/script&gt;" in page
 assert '<time datetime="' in page
+assert '<span class="num">1</span><span class="lbl">Day streak</span>' in page      # both saved today
+assert '<span class="num">1</span><span class="lbl">Best streak</span>' in page
+assert '<span class="num">2</span><span class="lbl">This week</span>' in page
+assert "You have trained today." in page
+assert "tz_offset_min" in page and dashboard_routes.TZ_COOKIE == "tz_offset_min"
 print("numbers + sessions: OK")
 
 # --- another user sees none of it --------------------------------------------------------
@@ -124,6 +135,53 @@ assert page.count('<details class="session">') == 10
 assert "Showing your latest 10 of 12 sessions" in page
 assert '<span class="num">12</span><span class="lbl">Sessions</span>' in page
 print("latest-10 limit: OK")
+
+# --- streaks count LOCAL days (time-zone cookie), with a frozen clock ----------------------
+carol = TestClient(app)
+register(carol, "carol")
+carol_id = carol.get("/api/me").json()["id"]
+upload_times = ["2026-09-19T20:00:00+00:00",     # 01:30 on the 20th in India
+                "2026-09-20T18:00:00+00:00",     # 23:30 on the 20th in India
+                "2026-09-21T02:00:00+00:00"]     # 07:30 on the 21st in India
+for i, when in enumerate(upload_times):
+    db_store.save_session(scored_df(), f"c{i}", f"C{i}", carol_id)
+    with engine.begin() as conn:
+        conn.execute(update(sessions_table)
+                     .where(sessions_table.c.session_id == f"c{i}")
+                     .values(uploaded_at=when))
+
+
+def carol_page(now_utc, offset):
+    """Render carol's dashboard at a chosen 'now', with an optional tz cookie."""
+    dashboard_routes._utc_now = lambda: now_utc
+    token = carol.cookies.get(auth_routes.COOKIE_NAME)
+    cookie = f"{auth_routes.COOKIE_NAME}={token}"
+    if offset is not None:
+        cookie += f"; tz_offset_min={offset}"
+    return carol.get("/", headers={"Cookie": cookie}).text
+
+
+def tile(page, value, label):
+    return f'<span class="num">{value}</span><span class="lbl">{label}</span>' in page
+
+
+monday_morning = datetime(2026, 9, 21, 10, 0, tzinfo=timezone.utc)
+
+page = carol_page(monday_morning, None)                  # no cookie -> UTC days 19, 20, 21
+assert tile(page, 3, "Day streak") and tile(page, 3, "Best streak") and tile(page, 1, "This week")
+assert carol_page(monday_morning, "abc") == page         # garbage cookie -> falls back to UTC
+
+page = carol_page(monday_morning, 330)                   # India -> days 20, 20, 21
+assert tile(page, 2, "Day streak") and tile(page, 2, "Best streak") and tile(page, 1, "This week")
+assert "You have trained today." in page
+
+page = carol_page(datetime(2026, 9, 22, 10, 0, tzinfo=timezone.utc), 0)   # nothing yet today
+assert tile(page, 3, "Day streak") and "Exercise today to keep your 3-day streak alive." in page
+
+page = carol_page(datetime(2026, 9, 24, 10, 0, tzinfo=timezone.utc), 0)   # two days missed
+assert tile(page, 0, "Day streak") and tile(page, 3, "Best streak")
+assert "Record a session today to start a streak." in page
+print("streaks + time zones: OK")
 
 print("\nAll dashboard checks passed.")
 engine.dispose()

@@ -3,7 +3,7 @@ backend/dashboard_routes.py
 
 Purpose (Day 26, step 3): the landing page after login.
 
-  GET /   your dashboard: summary cards + your most recent sessions
+  GET /   your dashboard: summary cards, streak tiles, most recent sessions
 
 Design
 ------
@@ -14,7 +14,9 @@ Design
 * Only the logged-in user's rows are ever queried (user id comes from the
   login cookie, never from the URL), so one user cannot see another's data.
 * Every piece of stored text (session name, feedback) is HTML-escaped.
-* The one small script converts UTC timestamps to the viewer's local time.
+* Small scripts convert UTC timestamps to the viewer's local time and send the
+  phone's UTC offset in a cookie, so streaks count LOCAL calendar days (see
+  streaks.py for the rules).
 * `Cache-Control: no-store` makes the browser re-fetch the page every time, so
   after a capture the dashboard is never a stale cached copy.
 
@@ -22,17 +24,25 @@ Look: same dark green-mono style as the login pages (shares their base CSS).
 """
 
 import html
+from datetime import datetime, timezone
 from statistics import mean
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse
 
 import db_store
+import streaks
 from auth_routes import _CSS as BASE_CSS, require_user_page
 
 router = APIRouter()
 
 RECENT_LIMIT = 10
+TZ_COOKIE = "tz_offset_min"        # minutes east of UTC, set by the page's script
+
+
+def _utc_now() -> datetime:
+    """The current time. A function (not inline) so tests can freeze the clock."""
+    return datetime.now(timezone.utc)
 
 _DASH_CSS = """
 :root{--orange:#ff8c00;--yellow:#ffe600}
@@ -48,7 +58,7 @@ _DASH_CSS = """
      background:var(--green);color:#000;border-radius:27px;font-weight:bold;
      font-size:1.05rem;text-decoration:none}
 .cta:active{opacity:.8}
-.cards{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin:8px 0 24px}
+.cards{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin:8px 0 10px}
 .card{background:var(--panel);border:1px solid var(--border);border-radius:10px;
       padding:12px 6px;text-align:center}
 .card .num{display:block;color:var(--green);font-size:1.7rem;font-weight:bold}
@@ -79,6 +89,7 @@ details.session[open] summary::after{content:"\\25B4"}
 .meta{color:var(--muted);font-size:.85rem;margin-top:2px}
 .fb{margin-top:4px;font-size:.9rem}
 .more{color:var(--muted);text-align:center;font-size:.85rem;margin-top:10px}
+.streakNote{color:var(--muted);font-size:.85rem;text-align:center;margin:2px 0 24px}
 """
 
 # Turns "2026-09-20T09:11:41+00:00" (UTC) into the viewer's local time.
@@ -90,6 +101,20 @@ document.querySelectorAll('time[data-local]').forEach(function (t) {
       {day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit'});
   }
 });
+</script>"""
+
+# Tells the server which calendar day it is for THIS phone. Runs before the
+# first render decision: on the first visit (no cookie yet) it sets the cookie
+# and reloads once; afterwards the cookie matches and nothing happens. If
+# cookies are blocked the cookie cannot be read back, so it never reloads.
+_TZ_JS = """<script>
+(function () {
+  var offset = -new Date().getTimezoneOffset();      // minutes east of UTC (IST = 330)
+  var m = document.cookie.match(/(?:^|; )tz_offset_min=(-?\\d+)/);
+  if (m && parseInt(m[1], 10) === offset) return;
+  document.cookie = 'tz_offset_min=' + offset + '; path=/; max-age=31536000; SameSite=Lax';
+  if (document.cookie.indexOf('tz_offset_min=' + offset) !== -1) location.reload();
+})();
 </script>"""
 
 
@@ -131,6 +156,22 @@ def _cards_html(summary: dict) -> str:
   <div class="card"><span class="num">{summary["total_reps"]}</span><span class="lbl">Total reps</span></div>
   <div class="card"><span class="num">{avg_text}</span><span class="lbl">Avg quality</span></div>
 </div>"""
+
+
+def _streak_html(stats: dict) -> str:
+    if stats["active_today"]:
+        note = "You have trained today. Keep it going tomorrow!"
+    elif stats["current"] > 0:
+        note = f'Exercise today to keep your {stats["current"]}-day streak alive.'
+    else:
+        note = "Record a session today to start a streak."
+    return f"""
+<div class="cards">
+  <div class="card"><span class="num">{stats["current"]}</span><span class="lbl">Day streak</span></div>
+  <div class="card"><span class="num">{stats["longest"]}</span><span class="lbl">Best streak</span></div>
+  <div class="card"><span class="num">{stats["week_sessions"]}</span><span class="lbl">This week</span></div>
+</div>
+<div class="streakNote">{_esc(note)}</div>"""
 
 
 def _set_html(st: dict) -> str:
@@ -182,7 +223,8 @@ def _session_html(session: dict) -> str:
 </details>"""
 
 
-def render_dashboard(username: str, summary: dict, recent: list[dict]) -> str:
+def render_dashboard(username: str, summary: dict, streak: dict,
+                     recent: list[dict]) -> str:
     """Build the complete dashboard page (pure function: easy to test)."""
     if recent:
         sessions_html = "".join(_session_html(s) for s in recent)
@@ -206,18 +248,27 @@ def render_dashboard(username: str, summary: dict, recent: list[dict]) -> str:
 <h1>Your progress</h1>
 <a class="cta" href="/capture">&#9654; Record a session</a>
 {_cards_html(summary)}
+{_streak_html(streak)}
 <h2>Recent sessions</h2>
 {sessions_html}
-</div>{_LOCAL_TIME_JS}</body></html>"""
+</div>{_TZ_JS}{_LOCAL_TIME_JS}</body></html>"""
     )
 
 
 # ================================================================== routes ==
 @router.get("/", response_class=HTMLResponse)
-def dashboard(user: dict = Depends(require_user_page)):
+def dashboard(request: Request, user: dict = Depends(require_user_page)):
     summary = db_store.get_summary(user["id"])
     recent = db_store.get_recent_sessions(user["id"], limit=RECENT_LIMIT)
+
+    # Streaks count the user's LOCAL calendar days (offset comes from the cookie).
+    offset = streaks.parse_offset(request.cookies.get(TZ_COOKIE))
+    today = streaks.local_today(_utc_now(), offset)
+    session_days = [streaks.to_local_date(t, offset)
+                    for t in db_store.get_exercise_session_times(user["id"])]
+    streak = streaks.streak_stats(session_days, today)
+
     return HTMLResponse(
-        render_dashboard(user["username"], summary, recent),
+        render_dashboard(user["username"], summary, streak, recent),
         headers={"Cache-Control": "no-store"},
     )

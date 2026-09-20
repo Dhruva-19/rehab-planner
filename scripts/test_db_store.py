@@ -124,5 +124,14 @@ assert summary["sessions"] == 2 and summary["total_reps"] == 20
 assert summary["avg_quality"] == 90.0                              # mean of 95 and 85
 print("dashboard queries: OK")
 
+# --- exercise-session times (for streaks) -----------------------------------------
+rest_only = make_scored_df().iloc[[1]].reset_index(drop=True)      # only the non_activity row
+store.save_session(rest_only, "s3", "Rest.csv", user_id=a)
+times = store.get_exercise_session_times(a)
+assert len(times) == 2                                              # s1 and s2; rest-only s3 skipped
+assert times == sorted(times)                                       # oldest first
+assert store.get_exercise_session_times(b) == []
+print("exercise session times: OK")
+
 print("\nAll db_store checks passed.")
 engine.dispose()

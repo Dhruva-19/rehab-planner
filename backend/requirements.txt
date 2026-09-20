@@ -1,10 +1,37 @@
-fastapi>=0.110
-uvicorn[standard]>=0.29
-python-multipart>=0.0.9
-numpy>=1.24
-pandas>=2.0
-scipy>=1.10
-scikit-learn>=1.3
-xgboost>=2.0
-joblib>=1.3
-sqlalchemy>=2.0
+# backend/requirements.txt -- installed by Render with: pip install -r requirements.txt
+#
+# Every version below is EXACT (==) and copied from the fastapi-env virtual
+# environment the app was tested in (Python 3.12.10), so Render installs the
+# same thing that ran on the developer's PC. Loose ">=" pins let Render pick
+# newer versions than the ones tested; that already broke a deploy once
+# (an unpickled model needs matching scikit-learn/xgboost versions).
+#
+# To change a version: upgrade it in the venv, re-run the test scripts in
+# scripts/, then update the line here. Do not edit versions blindly.
+
+# --- web framework -----------------------------------------------------------
+fastapi==0.141.1
+starlette==1.6.0
+pydantic==2.13.5
+uvicorn==0.52.4
+python-multipart==0.0.32
+
+# --- data + machine learning (must match the versions the model was built with) ---
+numpy==2.5.2
+pandas==3.0.5
+scipy==1.18.1
+scikit-learn==1.9.0
+# xgboost-cpu is the same xgboost 3.4.1 (same 'import xgboost', same model format)
+# without the ~250 MB NVIDIA GPU libraries that the plain 'xgboost' package pulls
+# in on Linux. Render's free instance has no GPU and limited disk, so use the CPU
+# build there. (Your PC's venv keeps plain xgboost 3.4.1; do not install both.)
+xgboost-cpu==3.4.1
+joblib==1.6.0
+
+# --- database (SQLite locally, Neon Postgres on Render via DATABASE_URL) ----------
+SQLAlchemy==2.0.51
+psycopg2-binary==2.9.13
+
+# --- PDF reports -------------------------------------------------------------------
+reportlab==5.0.1
+pillow==12.3.0

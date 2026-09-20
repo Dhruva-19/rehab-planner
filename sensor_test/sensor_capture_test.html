@@ -81,11 +81,40 @@
     #pocketOverlay .elapsed { font-size: 40px; margin: 16px 0; color: #0f0; }
     #pocketOverlay .hint { font-size: 14px; color: #888; margin-top: 20px; }
     #pocketOverlay .slideTrack { width: 90%; }
+
+    /* =====================================================
+       Day 26: login bar + "recording kept, retry upload" box
+       ===================================================== */
+    .userBar {
+      display: flex; justify-content: space-between; align-items: center;
+      margin-bottom: 4px; font-size: 14px; color: #888;
+    }
+    .userBar b { color: #0ff; }
+    .userBar form { margin: 0; }
+    .logoutBtn {
+      background: none; color: #f44; border: 1px solid #f44; border-radius: 20px;
+      padding: 10px 16px; font: inherit; font-size: 14px; min-height: 40px;
+    }
+    .retryBox {
+      border: 1px solid #f80; border-radius: 6px; padding: 10px; margin: 8px 0;
+      color: #f80;
+    }
+    .retryBox a { color: #0ff; }
+    .btn {
+      background: none; color: #0f0; border: 1px solid #0f0; border-radius: 24px;
+      padding: 12px 20px; font: inherit; font-size: 16px; min-height: 48px; margin-top: 8px;
+    }
   </style>
 </head>
 <body>
 
   <div>
+    <div class="userBar">
+      <span>Logged in as <b id="userName">...</b></span>
+      <form method="post" action="/logout" id="logoutForm">
+        <button type="submit" class="logoutBtn">Logout</button>
+      </form>
+    </div>
     <h2>Sensor Capture Test</h2>
 
     <input type="text" id="sessionLabel" placeholder="Session label (optional - e.g. squats_test1)">
@@ -98,6 +127,17 @@
 
     <div id="status">Idle</div>
     <div id="uploadStatus"></div>
+
+    <!-- Shown when an upload could not complete; the recording stays in memory -->
+    <div id="retryBox" class="retryBox" style="display:none">
+      <div id="retryMsg"></div>
+      <div class="row" id="retryLoginRow">
+        1. <a href="/login" target="_blank" rel="noopener">Log in again</a> (opens in a new tab)<br>
+        2. Come back to this tab and tap Retry.
+      </div>
+      <button type="button" class="btn" id="retryBtn">Retry upload</button>
+    </div>
+
     <div id="results"></div>
 
     <div class="row"><span class="label">Accel (m/s²) x,y,z:</span> <span id="accelVals">-</span></div>
@@ -138,6 +178,7 @@
     let elapsedIntervalId = null;
     let recordingStartedAt = 0;
     let fullscreenWarningShown = false;
+    let pendingUpload = false;   // a finished recording that has not been uploaded yet
 
     // =====================================================================
     // GENERIC SLIDE-TO-CONFIRM
@@ -304,6 +345,8 @@
       gyroHzCounter = { count: 0, windowStart: 0 };
       uploadStatusEl.textContent = '';
       document.getElementById('results').innerHTML = '';
+      hideRetry();
+      pendingUpload = false;
       fullscreenWarningShown = false;
       statusEl.style.color = '#ff0';
 
@@ -362,7 +405,48 @@
       stopRecording
     );
 
+    // ---------------------------------------------------------------
+    // Day 26: login handling. The recording lives in accelBuffer/gyroBuffer,
+    // so when an upload cannot complete we KEEP it and offer a retry instead
+    // of throwing the workout away.
+    // ---------------------------------------------------------------
+    function showRetry(message, needLogin) {
+      document.getElementById('retryMsg').textContent = message;
+      document.getElementById('retryLoginRow').style.display = needLogin ? 'block' : 'none';
+      document.getElementById('retryBox').style.display = 'block';
+    }
+
+    function hideRetry() {
+      document.getElementById('retryBox').style.display = 'none';
+    }
+
+    document.getElementById('retryBtn').addEventListener('click', () => uploadCapture());
+
+    // Logging out with an unsent recording would lose it - ask first.
+    document.getElementById('logoutForm').addEventListener('submit', (e) => {
+      if (pendingUpload && !confirm('You have a recording that has not been uploaded yet. Log out anyway?')) {
+        e.preventDefault();
+      }
+    });
+
+    // Show who is logged in. A 401 here means the login is gone; nothing has
+    // been recorded yet at page load, so going straight to /login loses nothing.
+    async function loadUser() {
+      const nameEl = document.getElementById('userName');
+      try {
+        const r = await fetch('/api/me');
+        if (r.status === 401) { window.location.href = '/login'; return; }
+        const me = await r.json();
+        nameEl.textContent = me.username;
+      } catch (err) {
+        nameEl.textContent = 'unknown';
+      }
+    }
+    loadUser();
+
     async function uploadCapture() {
+      pendingUpload = true;
+      hideRetry();
       uploadStatusEl.textContent = 'Uploading...';
       try {
         const response = await fetch(BACKEND_URL, {
@@ -374,8 +458,17 @@
             gyro: gyroBuffer
           })
         });
+
+        // Login expired (or logged out on another device): keep the recording.
+        if (response.status === 401) {
+          uploadStatusEl.textContent = '';
+          showRetry('Your login expired. Your recording is kept in this tab.', true);
+          return;
+        }
+
         const result = await response.json();
         if (result.status === 'ok') {
+          pendingUpload = false;
           uploadStatusEl.textContent =
             `Uploaded as "${result.session_id}" (${result.accel_samples} accel, ${result.gyro_samples} gyro samples)`;
 
@@ -397,10 +490,14 @@
             resultsEl.innerHTML = '<div style="color:#f80;">No exercise sets detected.</div>';
           }
         } else {
-          uploadStatusEl.textContent = `Upload error: ${result.message}`;
+          // e.g. "recording too short": retrying the same data cannot help.
+          pendingUpload = false;
+          uploadStatusEl.textContent =
+            `Upload error: ${result.message ?? result.detail ?? 'HTTP ' + response.status}`;
         }
       } catch (err) {
-        uploadStatusEl.textContent = `Upload failed: ${err.message} (is the backend running on port 8001?)`;
+        uploadStatusEl.textContent = `Upload failed: ${err.message}`;
+        showRetry('Could not reach the server. Your recording is kept in this tab - check your connection and retry.', false);
       }
     }
 

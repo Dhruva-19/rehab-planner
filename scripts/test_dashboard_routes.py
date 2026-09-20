@@ -2,8 +2,8 @@
 scripts/test_dashboard_routes.py
 
 Purpose: check the dashboard page end to end (login guard, empty state, real
-numbers, streak tiles and their local-time-zone handling, per-user isolation,
-HTML escaping, the "latest 10" limit) using
+numbers, streak tiles and their local-time-zone handling, the weekly goal card
+and Goals page, per-user isolation, HTML escaping, the "latest 10" limit) using
 FastAPI's TestClient and a THROWAWAY database. Your real database is untouched.
 
 Run from the project root, inside your fastapi-env:
@@ -74,6 +74,10 @@ def register(client, username):
 anon = TestClient(app)
 r = anon.get("/", **NO_FOLLOW)
 assert r.status_code == 303 and r.headers["location"] == "/login"
+assert anon.get("/goals", **NO_FOLLOW).status_code == 303
+r = anon.post("/goals", data={"target": "3"}, **NO_FOLLOW)
+assert r.status_code == 303 and r.headers["location"] == "/login"
+assert anon.post("/goals/clear", **NO_FOLLOW).status_code == 303
 print("guard: OK")
 
 # --- a brand-new user sees the empty state --------------------------------------------
@@ -88,6 +92,7 @@ assert '<span class="num">0</span><span class="lbl">Sessions</span>' in r.text
 assert '<span class="num">-</span><span class="lbl">Avg quality</span>' in r.text
 assert '<span class="num">0</span><span class="lbl">Day streak</span>' in r.text
 assert "Record a session today to start a streak." in r.text
+assert "Set a weekly goal" in r.text and 'href="/goals"' in r.text        # no goal yet
 print("empty state: OK")
 
 # --- real numbers ----------------------------------------------------------------------
@@ -182,6 +187,45 @@ page = carol_page(datetime(2026, 9, 24, 10, 0, tzinfo=timezone.utc), 0)   # two 
 assert tile(page, 0, "Day streak") and tile(page, 3, "Best streak")
 assert "Record a session today to start a streak." in page
 print("streaks + time zones: OK")
+
+# --- weekly goal: Goals page + progress card (frozen clock: Monday 21 Sept, India) ----------
+now = monday_morning                                    # carol has 1 session this week (India days)
+page = carol_page(now, 330)
+assert "Set a weekly goal" in page and 'class="fill"' not in page
+
+r = carol.get("/goals")
+assert r.status_code == 200 and "Sessions per week" in r.text
+assert 'action="/goals"' in r.text and 'class="pill"' in r.text
+assert "Remove goal" not in r.text                                       # nothing to remove yet
+assert r.headers["cache-control"] == "no-store"
+
+r = carol.post("/goals", data={"target": "3"}, **NO_FOLLOW)              # save a goal of 3
+assert r.status_code == 303 and r.headers["location"] == "/"
+page = carol_page(now, 330)
+assert '<b>1</b> / 3 sessions' in page
+assert 'style="width:33%"' in page and 'aria-valuenow="33"' in page
+assert "2 more to go" in page and "7 days left this week" in page        # Monday: 7 days incl. today
+assert 'value="3"' in carol.get("/goals").text and "Remove goal" in carol.get("/goals").text
+
+page = carol_page(datetime(2026, 9, 27, 10, 0, tzinfo=timezone.utc), 330)   # Sunday: 1 day left
+assert "1 day left this week" in page and "1 days" not in page
+
+carol.post("/goals", data={"target": "1"}, **NO_FOLLOW)                  # change to 1 -> reached
+page = carol_page(now, 330)
+assert "Goal reached. Great work!" in page and 'style="width:100%"' in page
+
+for bad in ("0", "22", "-3", "abc", "2.5", ""):
+    r = carol.post("/goals", data={"target": bad}, **NO_FOLLOW)
+    assert r.status_code == 400 and "whole number from 1 to 21" in r.text, bad
+assert '<b>1</b> / 1 sessions' in carol_page(now, 330)                   # bad input changed nothing
+
+bob_page = bob_client.get("/").text                                       # goals are per user
+assert "Set a weekly goal" in bob_page and "Goal reached" not in bob_page
+
+r = carol.post("/goals/clear", **NO_FOLLOW)
+assert r.status_code == 303 and r.headers["location"] == "/"
+assert "Set a weekly goal" in carol_page(now, 330)
+print("weekly goal: OK")
 
 print("\nAll dashboard checks passed.")
 engine.dispose()

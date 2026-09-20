@@ -133,5 +133,22 @@ assert times == sorted(times)                                       # oldest fir
 assert store.get_exercise_session_times(b) == []
 print("exercise session times: OK")
 
+# --- weekly goal ---------------------------------------------------------------------
+assert store.get_weekly_goal(a) is None
+store.set_weekly_goal(a, 3)
+assert store.get_weekly_goal(a) == 3
+store.set_weekly_goal(a, 5)                                         # replaces, no duplicate row
+assert store.get_weekly_goal(a) == 5
+assert store.get_weekly_goal(b) is None                             # per-user
+for bad in (0, -1, store.MAX_WEEKLY_GOAL + 1, "3", 2.5, True, None):
+    assert "whole number" in expect_error(store.set_weekly_goal, a, bad), bad
+assert store.get_weekly_goal(a) == 5                                # bad input changed nothing
+assert "does not exist" in expect_error(store.set_weekly_goal, 999, 3)
+store.set_weekly_goal(b, 1)
+store.clear_weekly_goal(a)
+assert store.get_weekly_goal(a) is None and store.get_weekly_goal(b) == 1
+store.clear_weekly_goal(a)                                          # clearing twice is fine
+print("weekly goal: OK")
+
 print("\nAll db_store checks passed.")
 engine.dispose()

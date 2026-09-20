@@ -13,6 +13,7 @@ What changed compared with the old db.py
 * New account functions: create_user, authenticate.
 * Dashboard queries (Day 26): get_summary, get_recent_sessions,
   get_exercise_session_times (for the streak tiles).
+* Weekly goal (Day 26): get_weekly_goal, set_weekly_goal, clear_weekly_goal.
 * New login-token functions: create_login_token, get_user_by_token,
   delete_login_token.
 * migrate_add_scoring_columns() is gone: the fresh database already has all
@@ -25,14 +26,14 @@ plain name (same as the old `from db import ...`).
 from datetime import datetime, timedelta, timezone
 
 import pandas as pd
-from sqlalchemy import delete, exists, func, insert, select
+from sqlalchemy import delete, exists, func, insert, select, update
 from sqlalchemy.exc import IntegrityError
 
 from auth_utils import (
     hash_password, hash_token, new_token, normalize_username,
     validate_credentials, verify_password,
 )
-from db_core import engine, init_db, login_tokens, sessions, sets, users
+from db_core import engine, goals, init_db, login_tokens, sessions, sets, users
 
 TOKEN_LIFETIME_DAYS = 30
 
@@ -342,3 +343,55 @@ def get_exercise_session_times(user_id: int) -> list[str]:
             .order_by(sessions.c.uploaded_at)
         ).all()
     return [row[0] for row in rows]
+
+
+# ==================================================================== goals ==
+WEEKLY_SESSIONS_KIND = "sessions_per_week"
+MAX_WEEKLY_GOAL = 21               # three sessions a day is already generous
+
+
+def get_weekly_goal(user_id: int) -> int | None:
+    """The user's target sessions per week, or None if they have not set one."""
+    with engine.connect() as conn:
+        row = conn.execute(
+            select(goals.c.target)
+            .where(goals.c.user_id == user_id, goals.c.kind == WEEKLY_SESSIONS_KIND)
+        ).first()
+    return None if row is None else int(row[0])
+
+
+def set_weekly_goal(user_id: int, target: int) -> None:
+    """
+    Create or replace the user's weekly session goal.
+    Raises ValueError unless target is a whole number from 1 to MAX_WEEKLY_GOAL,
+    or if the user does not exist.
+    """
+    if (not isinstance(target, int) or isinstance(target, bool)
+            or not 1 <= target <= MAX_WEEKLY_GOAL):
+        raise ValueError(f"Goal must be a whole number from 1 to {MAX_WEEKLY_GOAL}.")
+
+    now = _now().isoformat()
+    try:
+        with engine.begin() as conn:
+            # "Upsert" written portably (works on SQLite and Postgres): try to
+            # update the existing row first, insert only if there was none.
+            updated = conn.execute(
+                update(goals)
+                .where(goals.c.user_id == user_id, goals.c.kind == WEEKLY_SESSIONS_KIND)
+                .values(target=target, updated_at=now)
+            ).rowcount
+            if updated == 0:
+                conn.execute(insert(goals).values(
+                    user_id=user_id, kind=WEEKLY_SESSIONS_KIND,
+                    target=target, updated_at=now))
+    except IntegrityError as e:
+        raise ValueError("Could not save the goal: the user does not exist.") from e
+
+
+def clear_weekly_goal(user_id: int) -> None:
+    """Remove the user's weekly goal (a no-op if there is none)."""
+    with engine.begin() as conn:
+        conn.execute(
+            delete(goals)
+            .where(goals.c.user_id == user_id, goals.c.kind == WEEKLY_SESSIONS_KIND)
+        )

@@ -151,6 +151,21 @@ sets = Table(
 )
 Index("idx_sets_session", sets.c.session_id)
 
+# --------------------------------------------------------------------------
+# goals -- one target per user per goal type
+# --------------------------------------------------------------------------
+# Version one has a single kind, "sessions_per_week". Keying by (user, kind)
+# means per-exercise goals (e.g. "squats_reps_per_week") can be added later
+# without changing the table. init_db() creates this table on an existing
+# database automatically; no migration is needed.
+goals = Table(
+    "goals", metadata,
+    Column("user_id", Integer, ForeignKey("users.id"), primary_key=True),
+    Column("kind", Text, primary_key=True),
+    Column("target", Integer, nullable=False),
+    Column("updated_at", Text, nullable=False),          # ISO-8601 UTC string
+)
+
 
 def init_db() -> None:
     """Create any missing tables. Safe to call on every startup."""

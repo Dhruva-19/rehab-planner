@@ -3,7 +3,11 @@ backend/dashboard_routes.py
 
 Purpose (Day 26, step 3): the landing page after login.
 
-  GET /   your dashboard: summary cards, streak tiles, most recent sessions
+  GET /              your dashboard: summary cards, streak tiles, weekly goal,
+                     most recent sessions
+  GET  /goals        set or change your weekly session goal
+  POST /goals        save it (then back to the dashboard)
+  POST /goals/clear  remove it
 
 Design
 ------
@@ -27,8 +31,8 @@ import html
 from datetime import datetime, timezone
 from statistics import mean
 
-from fastapi import APIRouter, Depends, Request
-from fastapi.responses import HTMLResponse
+from fastapi import APIRouter, Depends, Form, Request
+from fastapi.responses import HTMLResponse, RedirectResponse
 
 import db_store
 import streaks
@@ -38,6 +42,7 @@ router = APIRouter()
 
 RECENT_LIMIT = 10
 TZ_COOKIE = "tz_offset_min"        # minutes east of UTC, set by the page's script
+NO_STORE = {"Cache-Control": "no-store"}
 
 
 def _utc_now() -> datetime:
@@ -51,7 +56,7 @@ _DASH_CSS = """
         font-size:14px;color:var(--muted)}
 .topbar b{color:var(--cyan)}
 .topbar form{margin:0}
-.logoutBtn{width:auto;height:auto;min-height:40px;margin:0;padding:10px 16px;
+.logoutBtn,.ghostBtn{width:auto;height:auto;min-height:40px;margin:0;padding:10px 16px;
            background:none;color:var(--red);border:1px solid var(--red);
            border-radius:20px;font-size:14px;font-weight:normal}
 .cta{display:block;margin:18px 0;height:54px;line-height:54px;text-align:center;
@@ -90,6 +95,24 @@ details.session[open] summary::after{content:"\\25B4"}
 .fb{margin-top:4px;font-size:.9rem}
 .more{color:var(--muted);text-align:center;font-size:.85rem;margin-top:10px}
 .streakNote{color:var(--muted);font-size:.85rem;text-align:center;margin:2px 0 24px}
+.goalCard{background:var(--panel);border:1px solid var(--border);border-radius:10px;
+          padding:14px;margin:0 0 24px}
+.goalHead{display:flex;justify-content:space-between;align-items:center;
+          color:var(--cyan);font-weight:bold}
+.goalHead a{color:var(--muted);font-weight:normal;font-size:.85rem}
+.goalNums{margin:8px 0;color:#e6e6e6}
+.goalNums b{color:var(--green);font-size:1.5rem}
+.bar{height:12px;background:#222;border-radius:6px;overflow:hidden}
+.fill{height:100%;background:var(--green)}
+.goalNote{color:var(--muted);font-size:.85rem;margin-top:8px}
+.cta.small{height:46px;line-height:46px;font-size:1rem;margin:12px 0 0}
+.navLink{color:var(--cyan);text-decoration:none;display:inline-block;padding:8px 0}
+.pills{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
+.pill{width:auto;height:44px;margin:0;padding:0 18px;background:none;color:var(--green);
+      border:1px solid var(--border);border-radius:22px;font-size:1rem;font-weight:normal}
+.pill:active{opacity:1;border-color:var(--green)}
+.goalForm{margin-top:8px}
+.danger{margin-top:28px;text-align:center}
 """
 
 # Turns "2026-09-20T09:11:41+00:00" (UTC) into the viewer's local time.
@@ -174,6 +197,80 @@ def _streak_html(stats: dict) -> str:
 <div class="streakNote">{_esc(note)}</div>"""
 
 
+def _goal_html(goal: dict) -> str:
+    """Weekly-goal card: progress bar, or a prompt to set a goal."""
+    target = goal["target"]
+    if target is None:
+        return """
+<div class="goalCard">
+  <div class="goalHead"><span>Weekly goal</span></div>
+  <div class="goalNote">Set a weekly session goal to track your progress.</div>
+  <a class="cta small" href="/goals">Set a weekly goal</a>
+</div>"""
+
+    done = goal["done"]
+    percent = min(100, int(round(done * 100 / target)))
+    if done >= target:
+        note = "Goal reached. Great work!"
+    else:
+        days_left = goal["days_left"]
+        note = (f"{target - done} more to go &middot; "
+                f"{days_left} day{'s' if days_left != 1 else ''} left this week")
+    return f"""
+<div class="goalCard">
+  <div class="goalHead"><span>Weekly goal</span><a href="/goals">Edit</a></div>
+  <div class="goalNums"><b>{done}</b> / {target} sessions</div>
+  <div class="bar" role="progressbar" aria-valuemin="0" aria-valuemax="100"
+       aria-valuenow="{percent}"><div class="fill" style="width:{percent}%"></div></div>
+  <div class="goalNote">{note}</div>
+</div>"""
+
+
+def _shell(title: str, body: str, scripts: str = "") -> str:
+    """The page wrapper shared by the dashboard and the goals page."""
+    return (
+        '<!doctype html><html lang="en"><head><meta charset="utf-8">'
+        '<meta name="viewport" content="width=device-width, initial-scale=1">'
+        '<meta name="theme-color" content="#0d0d0d">'
+        f"<title>{_esc(title)}</title><style>{BASE_CSS}{_DASH_CSS}</style></head>"
+        f'<body><div class="wrap">{body}</div>{scripts}</body></html>'
+    )
+
+
+_PILL_JS = """<script>
+document.querySelectorAll('.pill').forEach(function (b) {
+  b.addEventListener('click', function () {
+    document.getElementById('target').value = b.dataset.value;
+  });
+});
+</script>"""
+
+
+def render_goals_page(current: int | None, error: str = "") -> str:
+    """The page where the user sets their weekly session goal."""
+    error_html = f'<div class="error">{_esc(error)}</div>' if error else ""
+    value = "" if current is None else str(current)
+    pills = "".join(f'<button type="button" class="pill" data-value="{n}">{n}</button>'
+                    for n in (2, 3, 4, 5, 7))
+    remove = ("""
+<form method="post" action="/goals/clear" class="danger">
+  <button type="submit" class="ghostBtn">Remove goal</button>
+</form>""" if current is not None else "")
+    body = f"""
+<a class="navLink" href="/">&larr; Dashboard</a>
+<h1>Weekly goal</h1>
+<p class="sub">How many sessions do you want to complete each week (Monday to Sunday)?</p>
+{error_html}
+<form method="post" action="/goals" class="goalForm">
+  <label for="target">Sessions per week</label>
+  <input id="target" name="target" type="number" inputmode="numeric"
+         min="1" max="{db_store.MAX_WEEKLY_GOAL}" value="{_esc(value)}" required>
+  <div class="pills">{pills}</div>
+  <button type="submit">Save goal</button>
+</form>{remove}"""
+    return _shell("Weekly goal - Rehab Planner", body, _PILL_JS)
+
+
 def _set_html(st: dict) -> str:
     score = st["quality_score"]
     score_html = ('<span class="q">-</span>' if score is None else
@@ -223,7 +320,7 @@ def _session_html(session: dict) -> str:
 </details>"""
 
 
-def render_dashboard(username: str, summary: dict, streak: dict,
+def render_dashboard(username: str, summary: dict, streak: dict, goal: dict,
                      recent: list[dict]) -> str:
     """Build the complete dashboard page (pure function: easy to test)."""
     if recent:
@@ -235,12 +332,7 @@ def render_dashboard(username: str, summary: dict, streak: dict,
         sessions_html = ('<div class="empty">No sessions yet.<br>'
                          'Tap "Record a session" to capture your first workout.</div>')
 
-    return (
-        '<!doctype html><html lang="en"><head><meta charset="utf-8">'
-        '<meta name="viewport" content="width=device-width, initial-scale=1">'
-        '<meta name="theme-color" content="#0d0d0d">'
-        f"<title>Dashboard - Rehab Planner</title><style>{BASE_CSS}{_DASH_CSS}</style></head>"
-        f"""<body><div class="wrap">
+    body = f"""
 <div class="topbar">
   <span>Logged in as <b>{_esc(username)}</b></span>
   <form method="post" action="/logout"><button type="submit" class="logoutBtn">Logout</button></form>
@@ -249,10 +341,10 @@ def render_dashboard(username: str, summary: dict, streak: dict,
 <a class="cta" href="/capture">&#9654; Record a session</a>
 {_cards_html(summary)}
 {_streak_html(streak)}
+{_goal_html(goal)}
 <h2>Recent sessions</h2>
-{sessions_html}
-</div>{_TZ_JS}{_LOCAL_TIME_JS}</body></html>"""
-    )
+{sessions_html}"""
+    return _shell("Dashboard - Rehab Planner", body, _TZ_JS + _LOCAL_TIME_JS)
 
 
 # ================================================================== routes ==
@@ -268,7 +360,42 @@ def dashboard(request: Request, user: dict = Depends(require_user_page)):
                     for t in db_store.get_exercise_session_times(user["id"])]
     streak = streaks.streak_stats(session_days, today)
 
+    # Goal progress uses the same "sessions this week" number as the streak tiles.
+    goal = {
+        "target": db_store.get_weekly_goal(user["id"]),
+        "done": streak["week_sessions"],
+        "days_left": 7 - today.weekday(),          # including today; Monday = 7
+    }
+
     return HTMLResponse(
-        render_dashboard(user["username"], summary, streak, recent),
-        headers={"Cache-Control": "no-store"},
+        render_dashboard(user["username"], summary, streak, goal, recent),
+        headers=NO_STORE,
     )
+
+
+@router.get("/goals", response_class=HTMLResponse)
+def goals_page(user: dict = Depends(require_user_page)):
+    return HTMLResponse(
+        render_goals_page(db_store.get_weekly_goal(user["id"])), headers=NO_STORE
+    )
+
+
+@router.post("/goals")
+def goals_save(target: str = Form(""), user: dict = Depends(require_user_page)):
+    try:
+        db_store.set_weekly_goal(user["id"], int(target.strip()))
+    except ValueError:               # not a number, or outside 1..MAX_WEEKLY_GOAL
+        return HTMLResponse(
+            render_goals_page(
+                db_store.get_weekly_goal(user["id"]),
+                error=f"Enter a whole number from 1 to {db_store.MAX_WEEKLY_GOAL}.",
+            ),
+            status_code=400, headers=NO_STORE,
+        )
+    return RedirectResponse("/", status_code=303)      # show the new progress bar
+
+
+@router.post("/goals/clear")
+def goals_clear(user: dict = Depends(require_user_page)):
+    db_store.clear_weekly_goal(user["id"])
+    return RedirectResponse("/", status_code=303)

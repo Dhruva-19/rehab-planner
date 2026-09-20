@@ -11,6 +11,7 @@ What changed compared with the old db.py
   user_id, and get_sets_for_session() refuses to return a session that belongs
   to someone else (prevents one user reading another's data by guessing an id).
 * New account functions: create_user, authenticate.
+* Dashboard queries (Day 26): get_summary, get_recent_sessions.
 * New login-token functions: create_login_token, get_user_by_token,
   delete_login_token.
 * migrate_add_scoring_columns() is gone: the fresh database already has all
@@ -23,7 +24,7 @@ plain name (same as the old `from db import ...`).
 from datetime import datetime, timedelta, timezone
 
 import pandas as pd
-from sqlalchemy import delete, insert, select
+from sqlalchemy import delete, func, insert, select
 from sqlalchemy.exc import IntegrityError
 
 from auth_utils import (
@@ -254,3 +255,69 @@ def get_sets_for_session(session_id: str, user_id: int) -> pd.DataFrame:
         .order_by(sets.c.set_index)
     )
     return pd.read_sql_query(query, engine)
+
+
+# ================================================================ dashboard ==
+# Rest periods carry no reps and no quality score, so dashboard numbers ignore them.
+REST_LABEL = "non_activity"
+
+
+def get_summary(user_id: int) -> dict:
+    """
+    Headline numbers for one user:
+      sessions     - how many sessions they have saved
+      total_reps   - estimated reps summed over all exercise sets (rounded)
+      avg_quality  - mean quality score over all scored exercise sets,
+                     or None if nothing has been scored yet
+    """
+    with engine.connect() as conn:
+        n_sessions = conn.execute(
+            select(func.count()).select_from(sessions)
+            .where(sessions.c.user_id == user_id)
+        ).scalar_one()
+
+        total_reps, avg_quality = conn.execute(
+            select(
+                func.coalesce(func.sum(sets.c.estimated_reps), 0.0),
+                func.avg(sets.c.quality_score),      # SQL AVG ignores NULLs
+            )
+            .select_from(sets.join(sessions, sets.c.session_id == sessions.c.session_id))
+            .where(sessions.c.user_id == user_id, sets.c.label != REST_LABEL)
+        ).one()
+
+    return {
+        "sessions": int(n_sessions),
+        "total_reps": int(round(total_reps or 0)),
+        "avg_quality": None if avg_quality is None else float(avg_quality),
+    }
+
+
+def get_recent_sessions(user_id: int, limit: int = 10) -> list[dict]:
+    """
+    The user's most recent sessions (newest first), each a dict of the session
+    columns plus a "sets" list holding its EXERCISE sets in order (rest periods
+    left out). Two queries in total, however many sessions are returned.
+    """
+    with engine.connect() as conn:
+        session_rows = conn.execute(
+            select(sessions)
+            .where(sessions.c.user_id == user_id)
+            .order_by(sessions.c.uploaded_at.desc())
+            .limit(limit)
+        ).mappings().all()
+
+        session_ids = [row["session_id"] for row in session_rows]
+        set_rows = []
+        if session_ids:
+            set_rows = conn.execute(
+                select(sets)
+                .where(sets.c.session_id.in_(session_ids), sets.c.label != REST_LABEL)
+                .order_by(sets.c.session_id, sets.c.set_index)
+            ).mappings().all()
+
+    sets_by_session: dict[str, list[dict]] = {sid: [] for sid in session_ids}
+    for row in set_rows:
+        sets_by_session[row["session_id"]].append(dict(row))
+
+    return [{**dict(row), "sets": sets_by_session[row["session_id"]]}
+            for row in session_rows]

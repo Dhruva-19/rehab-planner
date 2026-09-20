@@ -1,5 +1,5 @@
 """
-FastAPI backend - Day 14 (pipeline-wired)
+FastAPI backend - Day 14 (pipeline-wired), Day 26 (multi-user login)
 
 Receives sensor buffers captured in-browser and runs them through the
 SAME pipeline app.py uses:
@@ -7,9 +7,14 @@ SAME pipeline app.py uses:
     -> predict_from_raw_csv   (windows + predictions)
     -> aggregate_into_sets    (windows -> exercise sets + rep counts)
     -> score_sets             (quality scoring)
-    -> save_session           (persist to the same SQLite DB app.py reads,
-                                so live-captured sessions show up under
-                                Streamlit's "Past Sessions" tab too)
+    -> save_session           (persist under the LOGGED-IN user, via
+                                db_store.py -> rehab_planner_v2.db locally,
+                                hosted Postgres when DATABASE_URL is set)
+
+Day 26: the dashboard (/), the capture page (/capture) and /ingest now require
+login. Login/register/logout live in auth_routes.py; the dashboard lives in
+dashboard_routes.py. NOTE: the old Streamlit app.py still reads the
+old db.py / rehab_planner.db, so it no longer sees sessions captured here.
 
 The model bundle is loaded ONCE at server startup (not per-request) -
 predict_from_raw_csv accepts a pre-loaded bundle specifically to support
@@ -28,7 +33,7 @@ from typing import List, Optional
 
 import numpy as np
 import pandas as pd
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -38,11 +43,14 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.append(str(PROJECT_ROOT / "src" / "inference"))
 sys.path.append(str(PROJECT_ROOT / "src" / "feedback"))
 sys.path.append(str(PROJECT_ROOT / "src" / "storage"))
+sys.path.append(str(Path(__file__).resolve().parent))   # backend/, for auth_routes
 
 from predict_pipeline import predict_from_raw_csv, load_model_bundle, MODEL_PATH, WINDOWS_NPZ_PATH  # noqa: E402
 from aggregate_sets import aggregate_into_sets  # noqa: E402
 from quality_scorer import score_sets, session_summary  # noqa: E402
-from db import init_db, migrate_add_scoring_columns, save_session  # noqa: E402
+from db_store import init_db, save_session  # noqa: E402
+from auth_routes import router as auth_router, require_user_api, require_user_page  # noqa: E402
+from dashboard_routes import router as dashboard_router  # noqa: E402
 
 # Same convention as sensorlogger_to_upload_csv.py: data/sample_upload,
 # anchored to PROJECT_ROOT so it resolves to the same folder regardless
@@ -58,7 +66,6 @@ async def lifespan(app: FastAPI):
     # --- Startup: runs once when the server boots ---
     global _model_bundle
     init_db()
-    migrate_add_scoring_columns()
     print("Loading model bundle...")
     resolved_model_path = PROJECT_ROOT / MODEL_PATH
     resolved_windows_npz_path = PROJECT_ROOT / WINDOWS_NPZ_PATH
@@ -69,10 +76,13 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Rehab Planner Ingest API", lifespan=lifespan)
+app.include_router(auth_router)          # /login /register /logout /api/me
+app.include_router(dashboard_router)     # /  (the dashboard, landing page after login)
 from fastapi.responses import FileResponse
 
-@app.get("/")
-def serve_test_page():
+@app.get("/capture")
+def serve_test_page(user: dict = Depends(require_user_page)):
+    # Anonymous visitors are redirected to /login by the guard.
     html_path = PROJECT_ROOT / "sensor_test" / "sensor_capture_test.html"
     return FileResponse(html_path)
 
@@ -141,15 +151,18 @@ def dataframe_to_json_safe(df: pd.DataFrame) -> list:
 
 
 @app.post("/ingest")
-def ingest_session(payload: SessionPayload):
+def ingest_session(payload: SessionPayload, user: dict = Depends(require_user_api)):
     if not payload.accel or not payload.gyro:
         return {"status": "error", "message": "Both accel and gyro buffers are required and must be non-empty."}
 
     session_name = sanitize_session_name(payload.session_name)
 
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    acc_path = OUTPUT_DIR / f"{session_name}_acc.csv"
-    gyro_path = OUTPUT_DIR / f"{session_name}_gyro.csv"
+    # Prefix with the user id so two users with the same session name never
+    # overwrite each other's raw files.
+    file_stem = f"u{user['id']}_{session_name}"
+    acc_path = OUTPUT_DIR / f"{file_stem}_acc.csv"
+    gyro_path = OUTPUT_DIR / f"{file_stem}_gyro.csv"
 
     acc_df = samples_to_dataframe(payload.accel)
     gyro_df = samples_to_dataframe(payload.gyro)
@@ -173,7 +186,8 @@ def ingest_session(payload: SessionPayload):
         summary = session_summary(scored)
 
         session_id = f"{session_name}_{datetime.now():%Y%m%d_%H%M%S}"
-        save_session(scored, session_id=session_id, source_name=session_name)
+        save_session(scored, session_id=session_id, source_name=session_name,
+                     user_id=user["id"])
 
     except ValueError as e:
         # e.g. "not enough data for one window" - a legitimate, expected
@@ -199,4 +213,3 @@ def ingest_session(payload: SessionPayload):
 @app.get("/health")
 def health():
     return {"status": "backend is running", "model_loaded": _model_bundle is not None}
-

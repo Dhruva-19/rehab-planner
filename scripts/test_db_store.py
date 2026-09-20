@@ -102,5 +102,27 @@ assert "user does not exist" in expect_error(
 assert len(store.list_sessions(a)) == 1                          # failed saves left nothing
 print("sessions/sets: OK")
 
+# --- dashboard queries ---------------------------------------------------------
+summary = store.get_summary(a)
+assert summary == {"sessions": 1, "total_reps": 9, "avg_quality": 95.0}, summary
+assert store.get_summary(b) == {"sessions": 0, "total_reps": 0, "avg_quality": None}
+
+recent = store.get_recent_sessions(a)
+assert len(recent) == 1 and recent[0]["session_id"] == "s1"
+assert [x["label"] for x in recent[0]["sets"]] == ["squats"]      # rest set left out
+assert store.get_recent_sessions(b) == []                          # bob sees nothing
+
+second = make_scored_df()
+second.loc[0, "quality_score"] = 85.0                              # 2nd session, lower score
+second.loc[0, "estimated_reps"] = 11.0
+store.save_session(second, "s2", "Squats2.csv", user_id=a)
+recent = store.get_recent_sessions(a)
+assert [x["session_id"] for x in recent] == ["s2", "s1"]           # newest first
+assert len(store.get_recent_sessions(a, limit=1)) == 1
+summary = store.get_summary(a)
+assert summary["sessions"] == 2 and summary["total_reps"] == 20
+assert summary["avg_quality"] == 90.0                              # mean of 95 and 85
+print("dashboard queries: OK")
+
 print("\nAll db_store checks passed.")
 engine.dispose()

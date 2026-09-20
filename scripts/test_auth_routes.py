@@ -60,6 +60,14 @@ NO_FOLLOW = {"follow_redirects": False}
 assert client.get("/login").status_code == 200
 assert "Create account" in client.get("/register").text
 
+# show/hide-password eye: one on the login page, two on the register page,
+# each pointing at a real password field, and never able to submit the form.
+login_html, register_html = client.get("/login").text, client.get("/register").text
+assert login_html.count('class="eye"') == 1 and 'data-target="password"' in login_html
+assert register_html.count('class="eye"') == 2 and 'data-target="confirm"' in register_html
+assert 'type="button" class="eye"' in login_html
+assert "addEventListener" in login_html
+
 # --- guards block anonymous visitors --------------------------------------------
 r = client.get("/secret", **NO_FOLLOW)
 assert r.status_code == 303 and r.headers["location"] == "/login"

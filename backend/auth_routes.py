@@ -112,7 +112,58 @@ button:active{opacity:.8}
        border-radius:8px;background:#1a0f0f;color:var(--red)}
 .switch{margin-top:26px;text-align:center}
 a{color:var(--cyan)}
+/* show/hide-password eye button, sitting inside the field on the right */
+.pw-wrap{position:relative}
+.pw-wrap input{padding-right:56px}
+.pw-wrap .eye{position:absolute;top:0;right:2px;width:50px;height:50px;margin:0;
+              padding:0;background:transparent;color:var(--muted);
+              border-radius:8px;display:flex;align-items:center;justify-content:center}
+.pw-wrap .eye:active{opacity:1;color:var(--green)}
+.pw-wrap .eye.on{color:var(--green)}
+.eye svg{width:24px;height:24px;fill:none;stroke:currentColor;stroke-width:2;
+         stroke-linecap:round;stroke-linejoin:round}
+.eye .ico-hide{display:none}
+.eye.on .ico-show{display:none}
+.eye.on .ico-hide{display:block}
 """
+
+# Eye / eye-off icons (Feather icon set, MIT licence), inline so no external file
+# is needed. type="button" matters: it stops the button from submitting the form.
+_EYE_BUTTON = """<button type="button" class="eye" data-target="__TARGET__"
+        aria-label="Show password" aria-pressed="false">
+  <svg class="ico-show" viewBox="0 0 24 24" aria-hidden="true">
+    <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>
+  </svg>
+  <svg class="ico-hide" viewBox="0 0 24 24" aria-hidden="true">
+    <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/>
+    <line x1="1" y1="1" x2="23" y2="23"/>
+  </svg>
+</button>"""
+
+# Without JavaScript the field simply stays a normal hidden password field.
+_TOGGLE_JS = """<script>
+document.querySelectorAll('.eye').forEach(function (btn) {
+  btn.addEventListener('click', function () {
+    var input = document.getElementById(btn.dataset.target);
+    var show = input.type === 'password';
+    input.type = show ? 'text' : 'password';
+    btn.classList.toggle('on', show);
+    btn.setAttribute('aria-pressed', show ? 'true' : 'false');
+    btn.setAttribute('aria-label', show ? 'Hide password' : 'Show password');
+  });
+});
+</script>"""
+
+
+def _password_field(field_id: str, label: str, autocomplete: str, extra: str = "") -> str:
+    """A labelled password input with the show/hide eye button inside it."""
+    return (
+        f'<label for="{field_id}">{label}</label>'
+        f'<div class="pw-wrap"><input id="{field_id}" name="{field_id}" type="password" '
+        f'autocomplete="{autocomplete}" {extra} required>'
+        + _EYE_BUTTON.replace("__TARGET__", field_id)
+        + "</div>"
+    )
 
 
 def _page(title: str, body: str) -> str:
@@ -121,7 +172,7 @@ def _page(title: str, body: str) -> str:
         '<meta name="viewport" content="width=device-width, initial-scale=1">'
         '<meta name="theme-color" content="#0d0d0d">'
         f"<title>{html.escape(title)}</title><style>{_CSS}</style></head>"
-        f'<body><div class="wrap">{body}</div></body></html>'
+        f'<body><div class="wrap">{body}</div>{_TOGGLE_JS}</body></html>'
     )
 
 
@@ -140,9 +191,7 @@ def _login_html(error: str = "", username: str = "") -> str:
   <input id="username" name="username" value="{html.escape(username, quote=True)}"
          autocomplete="username" autocapitalize="none" autocorrect="off"
          spellcheck="false" required>
-  <label for="password">Password</label>
-  <input id="password" name="password" type="password"
-         autocomplete="current-password" required>
+  {_password_field("password", "Password", "current-password")}
   <button type="submit">Log in</button>
 </form>
 <p class="switch">No account? <a href="/register">Create one</a></p>
@@ -160,13 +209,9 @@ def _register_html(error: str = "", username: str = "") -> str:
          autocomplete="username" autocapitalize="none" autocorrect="off"
          spellcheck="false" required>
   <div class="hint">3-30 characters: letters, numbers, underscore.</div>
-  <label for="password">Password</label>
-  <input id="password" name="password" type="password"
-         autocomplete="new-password" minlength="{MIN_PASSWORD_LENGTH}" required>
+  {_password_field("password", "Password", "new-password", f'minlength="{MIN_PASSWORD_LENGTH}"')}
   <div class="hint">At least {MIN_PASSWORD_LENGTH} characters.</div>
-  <label for="confirm">Confirm password</label>
-  <input id="confirm" name="confirm" type="password"
-         autocomplete="new-password" required>
+  {_password_field("confirm", "Confirm password", "new-password")}
   <button type="submit">Create account</button>
 </form>
 <p class="switch">Already registered? <a href="/login">Log in</a></p>
